@@ -18,7 +18,8 @@
 </head>
 <body class="bg-slate-900 text-slate-100 font-sans antialiased">
   <div id="root"></div>
-<script type="text/babel">
+
+  <script type="text/babel">
     const { useState, useEffect, useMemo } = React;
 
     const SUPABASE_URL = 'https://kfnlmryobtyovvnrscfv.supabase.co';
@@ -88,10 +89,6 @@
       const [auditorNote, setAuditorNote] = useState('');
       const [showSuggestions, setShowSuggestions] = useState(false);
 
-      // State editing Qty QC per baris audit log
-      const [editingQcId, setEditingQcId] = useState(null);
-      const [qcInputQty, setQcInputQty] = useState('');
-
       const [dashboardSearch, setDashboardSearch] = useState('');
       const [sortConfig, setSortConfig] = useState({ key: null, direction: 'asc' });
 
@@ -101,7 +98,7 @@
         fetchCloudData();
       }, []);
 
-      const logActionHistory = async (type, sku, details) => {
+      const logActionHistory = (type, sku, details) => {
         const timestamp = new Date().toLocaleString('id-ID');
         const newHistoryItem = {
           id: Date.now().toString() + Math.random().toString(36).substr(2, 4),
@@ -113,20 +110,6 @@
           details
         };
         setActionHistory(prev => [newHistoryItem, ...prev]);
-
-        try {
-          await supabase.from('audit_action_histories').insert([{
-            id: newHistoryItem.id,
-            timestamp: newHistoryItem.timestamp,
-            actor: newHistoryItem.actor,
-            role: newHistoryItem.role,
-            type: newHistoryItem.type,
-            sku: newHistoryItem.sku,
-            details: newHistoryItem.details
-          }]);
-        } catch (err) {
-          console.error('Gagal simpan action history ke cloud:', err);
-        }
       };
 
       const fetchCloudData = async () => {
@@ -201,8 +184,7 @@
             setMasterStock(formattedMaster);
           }
 
-          // Load Audit Logs (Hasil Opname) dari Cloud
-          const { data: logData, error: logError } = await supabase.from('audit_logs').select('*').order('created_at', { ascending: false });
+          const { data: logData, error: logError } = await supabase.from('audit_logs').select('*').order('timestamp', { ascending: false });
           if (!logError && logData && logData.length > 0) {
             const formattedLogs = logData.map(log => ({
               id: log.id,
@@ -219,39 +201,10 @@
               note: log.auditor_note,
               auditorName: log.auditor_name || 'System / Umum',
               qcName: log.qc_name || '-',
-              qcInputQty: log.qc_input_qty !== null && log.qc_input_qty !== undefined ? log.qc_input_qty : null,
               accStatus: log.acc_status || 'PENDING',
               accBy: log.acc_by || '-'
             }));
             setAuditLogs(formattedLogs);
-          }
-
-          // Load Import Histories dari Cloud
-          const { data: impData, error: impError } = await supabase.from('audit_import_histories').select('*').order('created_at', { ascending: false });
-          if (!impError && impData && impData.length > 0) {
-            const formattedImps = impData.map(i => ({
-              id: i.id,
-              timestamp: i.timestamp,
-              fileName: i.file_name,
-              mode: i.mode,
-              uploader: i.uploader
-            }));
-            setImportHistory(formattedImps);
-          }
-
-          // Load Action Histories dari Cloud
-          const { data: actData, error: actError } = await supabase.from('audit_action_histories').select('*').order('created_at', { ascending: false });
-          if (!actError && actData && actData.length > 0) {
-            const formattedActs = actData.map(a => ({
-              id: a.id,
-              timestamp: a.timestamp,
-              actor: a.actor,
-              role: a.role,
-              type: a.type,
-              sku: a.sku,
-              details: a.details
-            }));
-            setActionHistory(formattedActs);
           }
 
           setDbStatus('🟢 Terhubung ke Cloud Supabase');
@@ -424,7 +377,6 @@
           note: auditorNote,
           auditorName: currentUser,
           qcName: '-',
-          qcInputQty: null,
           accStatus: 'PENDING',
           accBy: '-'
         };
@@ -452,7 +404,6 @@
             auditor_note: auditorNote,
             auditor_name: currentUser,
             qc_name: '-',
-            qc_input_qty: null,
             acc_status: 'PENDING',
             acc_by: '-'
           }]);
@@ -531,29 +482,6 @@
         }
       };
 
-      const handleSaveQcQty = async (id, skuCode) => {
-        if (currentRole !== 'qc') {
-          alert('Akses Ditolak! Hanya akun QC yang dapat mengisi kuantitas pembanding.');
-          return;
-        }
-        const parsedQcQty = qcInputQty === '' ? null : parseFloat(qcInputQty);
-        
-        setAuditLogs(auditLogs.map(log => log.id === id ? { ...log, qcInputQty: parsedQcQty, qcName: log.qcName === '-' ? currentUser : log.qcName } : log));
-        setEditingQcId(null);
-        setQcInputQty('');
-
-        logActionHistory('QC_INPUT_QTY', skuCode, `QC (${currentUser}) memasukkan angka pembanding fisik: ${parsedQcQty !== null ? parsedQcQty + ' Pcs' : 'Dihapus'}`);
-
-        try {
-          await supabase.from('audit_logs').update({ 
-            qc_input_qty: parsedQcQty,
-            qc_name: currentUser 
-          }).eq('id', id);
-        } catch (err) {
-          console.error('Gagal menyimpan QC Qty ke cloud:', err);
-        }
-      };
-
       // Handler Tambah Task To-Do Baru & Simpan ke Cloud Supabase
       const handleCreateTask = async (e) => {
         e.preventDefault();
@@ -579,7 +507,7 @@
         };
 
         setTodos([newTask, ...todos]);
-        setTodoPeriod(taskCategory);
+        setTodoPeriod(taskCategory); // Otomatis pindah tab kategori agar task langsung terlihat
         setTaskTitle('');
         setTaskDesc('');
         setTaskDueDate('');
@@ -601,6 +529,7 @@
         }
       };
 
+      // Handler Ubah Status Checkbox To-Do & Sinkronisasi ke Cloud
       const handleToggleTask = async (taskId, currentCompleted) => {
         const nextStatus = !currentCompleted;
         setTodos(todos.map(t => t.id === taskId ? { ...t, completed: nextStatus } : t));
@@ -612,6 +541,7 @@
         }
       };
 
+      // Handler Hapus Task To-Do & Hapus dari Cloud
       const handleDeleteTask = async (taskId) => {
         if (currentRole !== 'koordinator') {
           alert('Hanya Koordinator yang berhak menghapus task To-Do!');
@@ -627,9 +557,13 @@
         }
       };
 
+      // Filter & Sort To-Do Tasks
       const sortedFilteredTodos = useMemo(() => {
         let filtered = todos.filter(t => t.period === todoPeriod);
+
+        // Sorting Priority Order: High -> Medium -> Low
         const priorityWeight = { 'High': 3, 'Medium': 2, 'Low': 1 };
+        
         return filtered.sort((a, b) => {
           const wA = priorityWeight[a.priority] || 0;
           const wB = priorityWeight[b.priority] || 0;
@@ -640,9 +574,7 @@
       const reconciliationData = useMemo(() => {
         const physicalCounts = {};
         auditLogs.forEach(log => {
-          // Jika QC sudah input qty pembanding, gunakan qty QC tersebut, jika tidak gunakan hitungan auditor (pcsQty)
-          const finalCount = (log.qcInputQty !== null && log.qcInputQty !== undefined) ? Number(log.qcInputQty) : log.pcsQty;
-          physicalCounts[log.sku] = (physicalCounts[log.sku] || 0) + finalCount;
+          physicalCounts[log.sku] = (physicalCounts[log.sku] || 0) + log.pcsQty;
         });
 
         let items = masterStock.map(stock => {
@@ -761,16 +693,14 @@
           alert('Belum ada data opname fisik untuk diexport!');
           return;
         }
-        const headers = ['No', 'Waktu Audit', 'Zona / Lokasi', 'Kode SKU Variasi', 'Nama Produk', 'Qty Auditor (Pcs)', 'Qty QC Temuan (Pcs)', 'Final Qty Digunakan (Pcs)', 'Satuan Input', 'Rasio Konversi', 'System Qty (Pcs)', 'Selisih (Pcs)', 'Author (Auditor)', 'QC Check', 'Status ACC Koordinator', 'Catatan Auditor'];
+        const headers = ['No', 'Waktu Audit', 'Zona / Lokasi', 'Kode SKU Variasi', 'Nama Produk', 'Qty Input Physical', 'Satuan Input', 'Rasio Konversi', 'Physical Qty (Pcs)', 'Physical Qty (Koli)', 'System Qty (Pcs)', 'Selisih (Pcs)', 'Selisih (Koli)', 'Author (Auditor)', 'QC Check', 'Status ACC Koordinator', 'Catatan Auditor'];
         const rows = auditLogs.map((log, index) => {
           const systemQty = log.systemQty || 0;
-          const finalPcs = (log.qcInputQty !== null && log.qcInputQty !== undefined) ? Number(log.qcInputQty) : log.pcsQty;
-          const selisihPcs = finalPcs - systemQty;
+          const selisihPcs = log.pcsQty - systemQty;
           const selisihKoli = parseFloat((selisihPcs / (log.conversionRatio || 50)).toFixed(2));
           return [
-            index + 1, log.timestamp, log.zone, log.sku, log.name, log.pcsQty, 
-            log.qcInputQty !== null && log.qcInputQty !== undefined ? log.qcInputQty : '-', 
-            finalPcs, log.unit, log.conversionRatio, systemQty, selisihPcs, 
+            index + 1, log.timestamp, log.zone, log.sku, log.name, log.inputQty, log.unit, log.conversionRatio, 
+            log.pcsQty, parseFloat(log.koliQty.toFixed(2)), systemQty, selisihPcs, selisihKoli, 
             log.auditorName, log.qcName, log.accStatus, log.note || '-'
           ];
         });
@@ -909,27 +839,14 @@
 
             setMasterStock(updatedMaster);
 
-            const newImportLogId = Date.now().toString();
             const newImportLog = {
-              id: newImportLogId,
+              id: Date.now().toString(),
               timestamp: new Date().toLocaleString('id-ID'),
               fileName: file.name,
               mode: modeNameLabel,
               uploader: currentUser
             };
             setImportHistory(prev => [newImportLog, ...prev]);
-
-            try {
-              await supabase.from('audit_import_histories').insert([{
-                id: newImportLogId,
-                timestamp: newImportLog.timestamp,
-                file_name: newImportLog.fileName,
-                mode: newImportLog.mode,
-                uploader: newImportLog.uploader
-              }]);
-            } catch (err) {
-              console.error('Gagal simpan histori import ke cloud:', err);
-            }
 
             setUploadProgress(100);
             setUploadStatusMsg('Sinkronisasi & Hapus SKU Selesai di Cloud!');
@@ -1044,7 +961,7 @@
                     <h2 className="text-base font-semibold text-white mb-4">Form Audit Stock Opname</h2>
                     {currentRole === 'qc' ? (
                       <div className="bg-amber-950/40 border border-amber-500/30 p-4 rounded-xl text-xs text-amber-300 text-center">
-                        Akun QC dapat melakukan verifikasi checklist serta menginput Qty pembanding pada tabel sebelah kanan jika terdapat selisih hitungan dengan auditor. Input form baru dikunci untuk peran QC.
+                        Akun QC bertugas melakukan verifikasi (*Check*) pada tabel sebelah kanan. Input form fisik dikunci untuk peran QC.
                       </div>
                     ) : (
                       <form onSubmit={handleAddAuditLog} className="space-y-4">
@@ -1121,8 +1038,7 @@
                             <tr>
                               <th className="p-3">Waktu & Zona</th>
                               <th className="p-3">SKU & Author</th>
-                              <th className="p-3 text-right">Qty Hitungan Auditor</th>
-                              <th className="p-3 text-right">Qty Temuan QC</th>
+                              <th className="p-3 text-right">Qty & Konversi</th>
                               <th className="p-3 text-center">QC Check</th>
                               <th className="p-3 text-center">ACC Koordinator</th>
                               <th className="p-3 text-center">Aksi</th>
@@ -1140,53 +1056,6 @@
                                 <td className="p-3 text-right font-mono">
                                   <div className="text-white font-bold">{log.inputQty} {log.unit}</div>
                                   <div className="text-emerald-400 text-[11px]">{log.pcsQty} Pcs</div>
-                                </td>
-                                <td className="p-3 text-right font-mono">
-                                  {editingQcId === log.id ? (
-                                    <div className="flex items-center justify-end space-x-1">
-                                      <input 
-                                        type="number" 
-                                        step="any" 
-                                        value={qcInputQty} 
-                                        onChange={(e) => setQcInputQty(e.target.value)} 
-                                        placeholder="Pcs" 
-                                        className="w-20 bg-slate-900 border border-indigo-500 rounded px-1.5 py-1 text-xs text-white font-mono"
-                                        autoFocus
-                                      />
-                                      <button 
-                                        onClick={() => handleSaveQcQty(log.id, log.sku)} 
-                                        className="bg-emerald-600 hover:bg-emerald-500 text-white px-2 py-1 rounded text-[10px] font-bold"
-                                      >
-                                        Simpan
-                                      </button>
-                                      <button 
-                                        onClick={() => setEditingQcId(null)} 
-                                        className="bg-slate-700 hover:bg-slate-600 text-slate-300 px-1.5 py-1 rounded text-[10px]"
-                                      >
-                                        ✕
-                                      </button>
-                                    </div>
-                                  ) : (
-                                    <div className="flex items-center justify-end space-x-1.5">
-                                      <div>
-                                        <div className="text-amber-300 font-bold">
-                                          {log.qcInputQty !== null && log.qcInputQty !== undefined ? `${log.qcInputQty} Pcs` : '-'}
-                                        </div>
-                                        <div className="text-[10px] text-slate-400">
-                                          {log.qcInputQty !== null && log.qcInputQty !== undefined ? 'Override QC' : 'Mengikuti Auditor'}
-                                        </div>
-                                      </div>
-                                      {currentRole === 'qc' && (
-                                        <button 
-                                          onClick={() => { setEditingQcId(log.id); setQcInputQty(log.qcInputQty !== null && log.qcInputQty !== undefined ? log.qcInputQty : log.pcsQty); }}
-                                          className="bg-indigo-600/30 hover:bg-indigo-600/50 text-indigo-300 border border-indigo-500/40 px-2 py-1 rounded text-[10px] font-semibold"
-                                          title="Input Qty Pembanding QC"
-                                        >
-                                          Edit Qty
-                                        </button>
-                                      )}
-                                    </div>
-                                  )}
                                 </td>
                                 <td className="p-3 text-center">
                                   <button 
@@ -1248,7 +1117,7 @@
                             <span className={`px-2 py-0.5 rounded text-[10px] font-mono font-bold uppercase mt-0.5 ${
                               hist.type === 'TAMBAH_SKU' ? 'bg-blue-500/20 text-blue-300 border border-blue-500/30' :
                               hist.type === 'HAPUS_SKU' ? 'bg-rose-500/20 text-rose-300 border border-rose-500/30' :
-                              hist.type.includes('ACC_QC') || hist.type === 'QC_INPUT_QTY' ? 'bg-indigo-500/20 text-indigo-300 border border-indigo-500/30' :
+                              hist.type.includes('ACC_QC') ? 'bg-indigo-500/20 text-indigo-300 border border-indigo-500/30' :
                               'bg-emerald-500/20 text-emerald-300 border border-emerald-500/30'
                             }`}>
                               {hist.type.replace(/_/g, ' ')}
@@ -1297,6 +1166,7 @@
                           onChange={(e) => setTaskDesc(e.target.value)} 
                           rows="2"
                           className="w-full bg-slate-900 border border-slate-700 rounded-xl px-3 py-2 text-xs text-white"
+                        ></textarea>
                       </div>
 
                       <div className="grid grid-cols-2 gap-2">
@@ -1769,6 +1639,6 @@
     }
 
     ReactDOM.render(<App />, document.getElementById('root'));
-</script>
+  </script>
 </body>
 </html>
