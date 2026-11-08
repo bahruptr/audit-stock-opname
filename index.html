@@ -63,6 +63,10 @@
       const [activeTab, setActiveTab] = useState('opname');
       const [masterStock, setMasterStock] = useState(INITIAL_MASTER_STOCK);
       const [auditLogs, setAuditLogs] = useState([]);
+      const [actionHistory, setActionHistory] = useState([]); 
+      const [importHistory, setImportHistory] = useState([]); // State Histori Import File
+      const [exportSubTab, setExportSubTab] = useState('upload'); // Subtab di menu Import & Laporan ('upload' atau 'history')
+
       const [todos, setTodos] = useState(INITIAL_TODOS);
       const [importMode, setImportMode] = useState('master');
       const [dbStatus, setDbStatus] = useState('Menghubungkan ke Cloud...');
@@ -91,6 +95,20 @@
       useEffect(() => {
         fetchCloudData();
       }, []);
+
+      const logActionHistory = (type, sku, details) => {
+        const timestamp = new Date().toLocaleString('id-ID');
+        const newHistoryItem = {
+          id: Date.now().toString() + Math.random().toString(36).substr(2, 4),
+          timestamp,
+          actor: currentUser,
+          role: currentRole,
+          type,
+          sku,
+          details
+        };
+        setActionHistory(prev => [newHistoryItem, ...prev]);
+      };
 
       const fetchCloudData = async () => {
         try {
@@ -162,7 +180,7 @@
               inputQty: log.input_qty,
               unit: log.unit,
               pcsQty: log.pcs_qty,
-              koliQty: log.karung_qty, // Mapping backend karung_qty ke koliQty
+              koliQty: log.karung_qty,
               conversionRatio: log.conversion_ratio || 50,
               systemQty: 0,
               note: log.auditor_note,
@@ -349,6 +367,8 @@
         };
 
         setAuditLogs([newLog, ...auditLogs]);
+        logActionHistory('TAMBAH_SKU', activeSkuObj.sku, `Input ${inputQty} ${unit} (${convertedValues.pcs} Pcs) di ${zoneToSave || 'Zona General'}`);
+
         setSkuInput('');
         setSelectedSkuObj(null);
         setInputQty('');
@@ -364,7 +384,7 @@
             input_qty: parseFloat(inputQty),
             unit: unit,
             pcs_qty: convertedValues.pcs,
-            karung_qty: convertedValues.koli, // Simpan ke kolom karung_qty di DB agar kompatibel
+            karung_qty: convertedValues.koli,
             conversion_ratio: parseFloat(conversionRatio),
             auditor_note: auditorNote,
             auditor_name: currentUser,
@@ -377,12 +397,22 @@
         }
       };
 
-      const handleDeleteAuditLog = async (id, logAuthor) => {
+      const handleDeleteAuditLog = async (id, logAuthor, logSku) => {
+        if (currentRole === 'qc') {
+          alert('Akses Ditolak! Akun QC tidak diizinkan untuk menghapus data record opname.');
+          return;
+        }
+
         if (currentRole === 'auditor' && currentUser !== logAuthor) {
           alert('Anda hanya dapat menghapus data yang Anda input sendiri!');
           return;
         }
+
+        if (!confirm(`Apakah Anda yakin ingin menghapus record SKU: ${logSku}?`)) return;
+
         setAuditLogs(auditLogs.filter(log => log.id !== id));
+        logActionHistory('HAPUS_SKU', logSku, `Menghapus record fisik yang dibuat oleh ${logAuthor}`);
+
         try {
           await supabase.from('audit_logs').delete().eq('id', id);
         } catch (err) {
@@ -390,7 +420,7 @@
         }
       };
 
-      const handleAccLog = async (id, currentStatus) => {
+      const handleAccLog = async (id, currentStatus, skuCode) => {
         if (currentRole !== 'koordinator') {
           alert('Akses Ditolak! Hanya Koordinator yang berhak memberikan ACC persetujuan.');
           return;
@@ -399,7 +429,12 @@
         const approver = currentUser;
         
         setAuditLogs(auditLogs.map(log => log.id === id ? { ...log, accStatus: newStatus, accBy: approver } : log));
-        
+        logActionHistory(
+          newStatus === 'APPROVED' ? 'ACC_KOORDINATOR_APPROVED' : 'ACC_KOORDINATOR_CANCEL', 
+          skuCode, 
+          newStatus === 'APPROVED' ? `ACC disetujui oleh ${approver}` : `Persetujuan ACC dibatalkan oleh ${approver}`
+        );
+
         try {
           await supabase.from('audit_logs').update({ 
             acc_status: newStatus, 
@@ -410,7 +445,7 @@
         }
       };
 
-      const handleQcUpdate = async (id, currentQc) => {
+      const handleQcUpdate = async (id, currentQc, skuCode) => {
         if (currentRole === 'auditor') {
           alert('Akses Ditolak! Auditor tidak berhak melakukan QC check.');
           return;
@@ -419,6 +454,11 @@
         const newQc = currentQc === '-' ? qcPerson : '-';
 
         setAuditLogs(auditLogs.map(log => log.id === id ? { ...log, qcName: newQc } : log));
+        logActionHistory(
+          newQc !== '-' ? 'ACC_QC_CHECKED' : 'ACC_QC_UNCHECKED', 
+          skuCode, 
+          newQc !== '-' ? `Di-verifikasi (Checked) oleh QC ${qcPerson}` : `Verifikasi QC dibatalkan`
+        );
 
         try {
           await supabase.from('audit_logs').update({ qc_name: newQc }).eq('id', id);
@@ -590,6 +630,8 @@
             
             let updatedMaster = [...masterStock];
             
+            const modeNameLabel = importMode === 'master' ? '1. Import Data Master Baru' : importMode === 'qty' ? '2. Import Qty Stok Saja' : '3. Sync & Hapus SKU Master';
+
             if (importMode === 'master') {
               for (const row of json) {
                 const findValue = (names) => {
@@ -692,6 +734,17 @@
             }
 
             setMasterStock(updatedMaster);
+
+            // Tambahkan ke Histori Import File
+            const newImportLog = {
+              id: Date.now().toString(),
+              timestamp: new Date().toLocaleString('id-ID'),
+              fileName: file.name,
+              mode: modeNameLabel,
+              uploader: currentUser
+            };
+            setImportHistory(prev => [newImportLog, ...prev]);
+
             setUploadProgress(100);
             setUploadStatusMsg('Sinkronisasi & Hapus SKU Selesai di Cloud!');
             setTimeout(() => setIsProcessingFile(false), 1200);
@@ -779,7 +832,12 @@
                     <button onClick={() => setActiveTab('opname')} className={`px-3 py-2 rounded-lg text-xs sm:text-sm font-medium ${activeTab === 'opname' ? 'bg-blue-600 text-white shadow-md' : 'text-slate-300 hover:bg-slate-800'}`}>Opname</button>
                     <button onClick={() => setActiveTab('todos')} className={`px-3 py-2 rounded-lg text-xs sm:text-sm font-medium ${activeTab === 'todos' ? 'bg-blue-600 text-white shadow-md' : 'text-slate-300 hover:bg-slate-800'}`}>To-Do</button>
                     <button onClick={() => setActiveTab('dashboard')} className={`px-3 py-2 rounded-lg text-xs sm:text-sm font-medium ${activeTab === 'dashboard' ? 'bg-blue-600 text-white shadow-md' : 'text-slate-300 hover:bg-slate-800'}`}>Dashboard</button>
-                    <button onClick={() => setActiveTab('export')} className={`px-3 py-2 rounded-lg text-xs sm:text-sm font-medium ${activeTab === 'export' ? 'bg-blue-600 text-white shadow-md' : 'text-slate-300 hover:bg-slate-800'}`}>Import & Laporan</button>
+                    
+                    {/* Restriksi: Menu Import & Laporan hanya untuk Koordinator */}
+                    {currentRole === 'koordinator' && (
+                      <button onClick={() => setActiveTab('export')} className={`px-3 py-2 rounded-lg text-xs sm:text-sm font-medium ${activeTab === 'export' ? 'bg-blue-600 text-white shadow-md' : 'text-slate-300 hover:bg-slate-800'}`}>Import & Laporan</button>
+                    )}
+
                     {currentRole === 'koordinator' && (
                       <button onClick={() => setActiveTab('settings')} className={`px-3 py-2 rounded-lg text-xs sm:text-sm font-medium ${activeTab === 'settings' ? 'bg-blue-600 text-white shadow-md' : 'text-slate-300 hover:bg-slate-800'}`}>Pengaturan Akun</button>
                     )}
@@ -795,132 +853,184 @@
 
           <main className="flex-1 max-w-7xl w-full mx-auto px-4 sm:px-6 lg:px-8 py-6">
             {activeTab === 'opname' && (
-              <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
-                <div className="lg:col-span-5 bg-slate-800/90 border border-slate-700/80 rounded-2xl p-5 shadow-xl">
-                  <h2 className="text-base font-semibold text-white mb-4">Form Audit Stock Opname</h2>
-                  {currentRole === 'qc' ? (
-                    <div className="bg-amber-950/40 border border-amber-500/30 p-4 rounded-xl text-xs text-amber-300 text-center">
-                      Akun QC bertugas melakukan verifikasi (*Check*) pada tabel sebelah kanan. Input form fisik dikunci untuk peran QC.
-                    </div>
-                  ) : (
-                    <form onSubmit={handleAddAuditLog} className="space-y-4">
-                      <div>
-                        <label className="block text-xs font-semibold uppercase text-slate-300 mb-1">1. Zona / Lokasi</label>
-                        <select value={selectedZone} onChange={(e) => setSelectedZone(e.target.value)} className="w-full bg-slate-900 border border-slate-700 rounded-xl px-3 py-2.5 text-sm text-white">
-                          {defaultZones.map(z => <option key={z} value={z}>{z}</option>)}
-                        </select>
+              <div className="space-y-6">
+                <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
+                  <div className="lg:col-span-5 bg-slate-800/90 border border-slate-700/80 rounded-2xl p-5 shadow-xl">
+                    <h2 className="text-base font-semibold text-white mb-4">Form Audit Stock Opname</h2>
+                    {currentRole === 'qc' ? (
+                      <div className="bg-amber-950/40 border border-amber-500/30 p-4 rounded-xl text-xs text-amber-300 text-center">
+                        Akun QC bertugas melakukan verifikasi (*Check*) pada tabel sebelah kanan. Input form fisik dikunci untuk peran QC.
                       </div>
+                    ) : (
+                      <form onSubmit={handleAddAuditLog} className="space-y-4">
+                        <div>
+                          <label className="block text-xs font-semibold uppercase text-slate-300 mb-1">1. Zona / Lokasi</label>
+                          <select value={selectedZone} onChange={(e) => setSelectedZone(e.target.value)} className="w-full bg-slate-900 border border-slate-700 rounded-xl px-3 py-2.5 text-sm text-white">
+                            {defaultZones.map(z => <option key={z} value={z}>{z}</option>)}
+                          </select>
+                        </div>
 
-                      <div className="relative">
-                        <label className="block text-xs font-semibold uppercase text-slate-300 mb-1">2. SKU Variasi Barang</label>
-                        <input type="text" placeholder="Cari Kode SKU / Nama..." value={skuInput} onChange={(e) => { setSkuInput(e.target.value); setSelectedSkuObj(null); setShowSuggestions(true); }} className="w-full bg-slate-900 border border-slate-700 rounded-xl px-3 py-2.5 text-sm text-white" />
-                        {showSuggestions && skuSuggestions.length > 0 && (
-                          <div className="absolute z-30 left-0 right-0 mt-1 bg-slate-900 border border-slate-700 rounded-xl shadow-2xl max-h-60 overflow-y-auto divide-y divide-slate-800">
-                            {skuSuggestions.map(item => (
-                              <div key={item.id} onClick={() => handleSelectSku(item)} className="p-2.5 hover:bg-slate-800 cursor-pointer text-xs flex justify-between">
-                                <div>
-                                  <p className="font-mono font-semibold text-blue-400">{item.sku}</p>
-                                  <p className="text-slate-300">{item.name}</p>
+                        <div className="relative">
+                          <label className="block text-xs font-semibold uppercase text-slate-300 mb-1">2. SKU Variasi Barang</label>
+                          <input type="text" placeholder="Cari Kode SKU / Nama..." value={skuInput} onChange={(e) => { setSkuInput(e.target.value); setSelectedSkuObj(null); setShowSuggestions(true); }} className="w-full bg-slate-900 border border-slate-700 rounded-xl px-3 py-2.5 text-sm text-white" />
+                          {showSuggestions && skuSuggestions.length > 0 && (
+                            <div className="absolute z-30 left-0 right-0 mt-1 bg-slate-900 border border-slate-700 rounded-xl shadow-2xl max-h-60 overflow-y-auto divide-y divide-slate-800">
+                              {skuSuggestions.map(item => (
+                                <div key={item.id} onClick={() => handleSelectSku(item)} className="p-2.5 hover:bg-slate-800 cursor-pointer text-xs flex justify-between">
+                                  <div>
+                                    <p className="font-mono font-semibold text-blue-400">{item.sku}</p>
+                                    <p className="text-slate-300">{item.name}</p>
+                                  </div>
+                                  <div className="text-emerald-400 font-semibold">{item.systemQty} Pcs</div>
                                 </div>
-                                <div className="text-emerald-400 font-semibold">{item.systemQty} Pcs</div>
-                              </div>
+                              ))}
+                            </div>
+                          )}
+                        </div>
+
+                        <div>
+                          <label className="block text-xs font-semibold uppercase text-slate-300 mb-1">3. Jumlah Fisik & Satuan</label>
+                          <div className="grid grid-cols-12 gap-2">
+                            <div className="col-span-7">
+                              <input type="number" step="any" placeholder="Qty" value={inputQty} onChange={(e) => setInputQty(e.target.value)} className="w-full bg-slate-900 border border-slate-700 rounded-xl px-3 py-2.5 text-base font-mono font-bold text-white" />
+                            </div>
+                            <div className="col-span-5">
+                              <select value={unit} onChange={(e) => setUnit(e.target.value)} className="w-full bg-slate-900 border border-slate-700 rounded-xl px-3 py-2.5 text-sm font-semibold text-white">
+                                <option value="Pcs">Pcs</option>
+                                <option value="Koli">Koli</option>
+                              </select>
+                            </div>
+                          </div>
+                          <div className="mt-2 flex items-center justify-between text-xs text-slate-400 bg-slate-900/60 p-2 rounded-lg border border-slate-800">
+                            <span>1 Koli =</span>
+                            <input type="number" value={conversionRatio} onChange={(e) => setConversionRatio(Math.max(1, parseInt(e.target.value) || 1))} className="w-16 bg-slate-800 border border-slate-700 rounded text-center py-0.5 text-xs text-white font-mono" />
+                          </div>
+                          {inputQty > 0 && (
+                            <div className="mt-3 bg-emerald-950/30 border border-emerald-500/30 rounded-xl p-3 text-xs text-emerald-300">
+                              <span className="font-semibold block">Konversi:</span>
+                              <span className="font-mono text-sm font-bold text-white">{convertedValues.displayText}</span>
+                            </div>
+                          )}
+                        </div>
+
+                        <div>
+                          <label className="block text-xs font-semibold uppercase text-slate-300 mb-1">Catatan Opname</label>
+                          <input type="text" placeholder="Catatan opsional" value={auditorNote} onChange={(e) => setAuditorNote(e.target.value)} className="w-full bg-slate-900 border border-slate-700 rounded-xl px-3 py-2 text-sm text-white" />
+                        </div>
+
+                        <button type="submit" className="w-full bg-gradient-to-r from-blue-600 to-indigo-600 hover:from-blue-500 hover:to-indigo-500 text-white font-semibold py-3 rounded-xl shadow-lg shadow-blue-600/30 transition-all">Simpan Audit (Cloud Sync)</button>
+                      </form>
+                    )}
+                  </div>
+
+                  <div className="lg:col-span-7 bg-slate-800/90 border border-slate-700/80 rounded-2xl p-5 shadow-xl flex flex-col">
+                    <h3 className="text-base font-semibold text-white mb-4">Daftar Hasil Record Opname ({auditLogs.length})</h3>
+                    {auditLogs.length === 0 ? (
+                      <div className="flex-1 flex flex-col items-center justify-center text-center p-8 border-2 border-dashed border-slate-700 rounded-xl my-4">
+                        <p className="text-slate-400 font-medium">Belum ada data fisik yang di-input</p>
+                      </div>
+                    ) : (
+                      <div className="flex-1 overflow-x-auto">
+                        <table className="w-full text-left text-xs">
+                          <thead className="bg-slate-900/80 text-slate-400 font-mono uppercase border-b border-slate-700">
+                            <tr>
+                              <th className="p-3">Waktu & Zona</th>
+                              <th className="p-3">SKU & Author</th>
+                              <th className="p-3 text-right">Qty & Konversi</th>
+                              <th className="p-3 text-center">QC Check</th>
+                              <th className="p-3 text-center">ACC Koordinator</th>
+                              <th className="p-3 text-center">Aksi</th>
+                            </tr>
+                          </thead>
+                          <tbody className="divide-y divide-slate-800">
+                            {auditLogs.map(log => (
+                              <tr key={log.id} className="hover:bg-slate-700/30">
+                                <td className="p-3"><span className="font-semibold text-slate-200">{log.zone}</span><span className="block text-[10px] text-slate-400">{log.timestamp}</span></td>
+                                <td className="p-3">
+                                  <span className="font-mono text-blue-400 font-semibold block">{log.sku}</span>
+                                  <span className="text-slate-300 text-[11px]">{log.name}</span>
+                                  <span className="block text-[10px] text-indigo-400 mt-0.5">By: {log.auditorName}</span>
+                                </td>
+                                <td className="p-3 text-right font-mono">
+                                  <div className="text-white font-bold">{log.inputQty} {log.unit}</div>
+                                  <div className="text-emerald-400 text-[11px]">{log.pcsQty} Pcs</div>
+                                </td>
+                                <td className="p-3 text-center">
+                                  <button 
+                                    onClick={() => handleQcUpdate(log.id, log.qcName, log.sku)} 
+                                    disabled={currentRole === 'auditor'}
+                                    className={`px-2 py-1 rounded text-[10px] font-bold transition-all ${currentRole === 'auditor' ? 'opacity-50 cursor-not-allowed bg-slate-800 text-slate-500' : log.qcName !== '-' ? 'bg-indigo-500/20 text-indigo-300 border border-indigo-500/30' : 'bg-slate-800 text-slate-400 border border-slate-700 hover:bg-slate-700'}`}
+                                  >
+                                    {log.qcName !== '-' ? `Checked (${log.qcName})` : 'Mark QC'}
+                                  </button>
+                                </td>
+                                <td className="p-3 text-center">
+                                  <button 
+                                    onClick={() => handleAccLog(log.id, log.accStatus, log.sku)} 
+                                    disabled={currentRole !== 'koordinator'}
+                                    className={`px-2.5 py-1 rounded text-[10px] font-bold transition-all ${currentRole !== 'koordinator' ? 'opacity-50 cursor-not-allowed bg-slate-800 text-slate-500' : log.accStatus === 'APPROVED' ? 'bg-emerald-500/20 text-emerald-300 border border-emerald-500/30' : 'bg-amber-500/10 text-amber-400 border border-amber-500/30 hover:bg-amber-500/20'}`}
+                                  >
+                                    {log.accStatus === 'APPROVED' ? 'APPROVED ✓' : 'PENDING ACC'}
+                                  </button>
+                                </td>
+                                <td className="p-3 text-center">
+                                  <button 
+                                    onClick={() => handleDeleteAuditLog(log.id, log.auditorName, log.sku)} 
+                                    disabled={currentRole === 'qc'}
+                                    className={`p-1.5 rounded-lg text-[10px] transition-all ${currentRole === 'qc' ? 'opacity-30 cursor-not-allowed bg-slate-800 text-slate-500' : 'bg-rose-500/10 text-rose-400 hover:bg-rose-500/30'}`}
+                                    title={currentRole === 'qc' ? 'Akun QC tidak diizinkan menghapus data' : 'Hapus Record'}
+                                  >
+                                    Hapus
+                                  </button>
+                                </td>
+                              </tr>
                             ))}
-                          </div>
-                        )}
+                          </tbody>
+                        </table>
                       </div>
-
-                      <div>
-                        <label className="block text-xs font-semibold uppercase text-slate-300 mb-1">3. Jumlah Fisik & Satuan</label>
-                        <div className="grid grid-cols-12 gap-2">
-                          <div className="col-span-7">
-                            <input type="number" step="any" placeholder="Qty" value={inputQty} onChange={(e) => setInputQty(e.target.value)} className="w-full bg-slate-900 border border-slate-700 rounded-xl px-3 py-2.5 text-base font-mono font-bold text-white" />
-                          </div>
-                          <div className="col-span-5">
-                            <select value={unit} onChange={(e) => setUnit(e.target.value)} className="w-full bg-slate-900 border border-slate-700 rounded-xl px-3 py-2.5 text-sm font-semibold text-white">
-                              <option value="Pcs">Pcs</option>
-                              <option value="Koli">Koli</option>
-                            </select>
-                          </div>
-                        </div>
-                        <div className="mt-2 flex items-center justify-between text-xs text-slate-400 bg-slate-900/60 p-2 rounded-lg border border-slate-800">
-                          <span>1 Koli =</span>
-                          <input type="number" value={conversionRatio} onChange={(e) => setConversionRatio(Math.max(1, parseInt(e.target.value) || 1))} className="w-16 bg-slate-800 border border-slate-700 rounded text-center py-0.5 text-xs text-white font-mono" />
-                        </div>
-                        {inputQty > 0 && (
-                          <div className="mt-3 bg-emerald-950/30 border border-emerald-500/30 rounded-xl p-3 text-xs text-emerald-300">
-                            <span className="font-semibold block">Konversi:</span>
-                            <span className="font-mono text-sm font-bold text-white">{convertedValues.displayText}</span>
-                          </div>
-                        )}
-                      </div>
-
-                      <div>
-                        <label className="block text-xs font-semibold uppercase text-slate-300 mb-1">Catatan Opname</label>
-                        <input type="text" placeholder="Catatan opsional" value={auditorNote} onChange={(e) => setAuditorNote(e.target.value)} className="w-full bg-slate-900 border border-slate-700 rounded-xl px-3 py-2 text-sm text-white" />
-                      </div>
-
-                      <button type="submit" className="w-full bg-gradient-to-r from-blue-600 to-indigo-600 hover:from-blue-500 hover:to-indigo-500 text-white font-semibold py-3 rounded-xl shadow-lg shadow-blue-600/30 transition-all">Simpan Audit (Cloud Sync)</button>
-                    </form>
-                  )}
+                    )}
+                  </div>
                 </div>
 
-                <div className="lg:col-span-7 bg-slate-800/90 border border-slate-700/80 rounded-2xl p-5 shadow-xl flex flex-col">
-                  <h3 className="text-base font-semibold text-white mb-4">Daftar Hasil Record Opname ({auditLogs.length})</h3>
-                  {auditLogs.length === 0 ? (
-                    <div className="flex-1 flex flex-col items-center justify-center text-center p-8 border-2 border-dashed border-slate-700 rounded-xl my-4">
-                      <p className="text-slate-400 font-medium">Belum ada data fisik yang di-input</p>
+                <div className="bg-slate-800/90 border border-slate-700/80 rounded-2xl p-5 shadow-xl space-y-4">
+                  <div className="flex justify-between items-center">
+                    <div>
+                      <h3 className="text-base font-bold text-white">Histori Aksi & Timeline Audit</h3>
+                      <p className="text-xs text-slate-400">Log aktivitas penambahan SKU, penghapusan data, ACC QC, dan ACC Koordinator</p>
+                    </div>
+                    <span className="bg-blue-600/20 text-blue-400 border border-blue-500/30 text-xs px-3 py-1 rounded-full font-mono font-bold">
+                      {actionHistory.length} Log Aksi
+                    </span>
+                  </div>
+
+                  {actionHistory.length === 0 ? (
+                    <div className="text-center py-6 text-xs text-slate-500 border border-dashed border-slate-700 rounded-xl">
+                      Belum ada histori aksi yang terekam pada sesi ini
                     </div>
                   ) : (
-                    <div className="flex-1 overflow-x-auto">
-                      <table className="w-full text-left text-xs">
-                        <thead className="bg-slate-900/80 text-slate-400 font-mono uppercase border-b border-slate-700">
-                          <tr>
-                            <th className="p-3">Waktu & Zona</th>
-                            <th className="p-3">SKU & Author</th>
-                            <th className="p-3 text-right">Qty & Konversi</th>
-                            <th className="p-3 text-center">QC Check</th>
-                            <th className="p-3 text-center">ACC Koordinator</th>
-                            <th className="p-3 text-center">Aksi</th>
-                          </tr>
-                        </thead>
-                        <tbody className="divide-y divide-slate-800">
-                          {auditLogs.map(log => (
-                            <tr key={log.id} className="hover:bg-slate-700/30">
-                              <td className="p-3"><span className="font-semibold text-slate-200">{log.zone}</span><span className="block text-[10px] text-slate-400">{log.timestamp}</span></td>
-                              <td className="p-3">
-                                <span className="font-mono text-blue-400 font-semibold block">{log.sku}</span>
-                                <span className="text-slate-300 text-[11px]">{log.name}</span>
-                                <span className="block text-[10px] text-indigo-400 mt-0.5">By: {log.auditorName}</span>
-                              </td>
-                              <td className="p-3 text-right font-mono">
-                                <div className="text-white font-bold">{log.inputQty} {log.unit}</div>
-                                <div className="text-emerald-400 text-[11px]">{log.pcsQty} Pcs</div>
-                              </td>
-                              <td className="p-3 text-center">
-                                <button 
-                                  onClick={() => handleQcUpdate(log.id, log.qcName)} 
-                                  disabled={currentRole === 'auditor'}
-                                  className={`px-2 py-1 rounded text-[10px] font-bold transition-all ${currentRole === 'auditor' ? 'opacity-50 cursor-not-allowed bg-slate-800 text-slate-500' : log.qcName !== '-' ? 'bg-indigo-500/20 text-indigo-300 border border-indigo-500/30' : 'bg-slate-800 text-slate-400 border border-slate-700 hover:bg-slate-700'}`}
-                                >
-                                  {log.qcName !== '-' ? `Checked (${log.qcName})` : 'Mark QC'}
-                                </button>
-                              </td>
-                              <td className="p-3 text-center">
-                                <button 
-                                  onClick={() => handleAccLog(log.id, log.accStatus)} 
-                                  disabled={currentRole !== 'koordinator'}
-                                  className={`px-2.5 py-1 rounded text-[10px] font-bold transition-all ${currentRole !== 'koordinator' ? 'opacity-50 cursor-not-allowed bg-slate-800 text-slate-500' : log.accStatus === 'APPROVED' ? 'bg-emerald-500/20 text-emerald-300 border border-emerald-500/30' : 'bg-amber-500/10 text-amber-400 border border-amber-500/30 hover:bg-amber-500/20'}`}
-                                >
-                                  {log.accStatus === 'APPROVED' ? 'APPROVED ✓' : 'PENDING ACC'}
-                                </button>
-                              </td>
-                              <td className="p-3 text-center">
-                                <button onClick={() => handleDeleteAuditLog(log.id, log.auditorName)} className="p-1.5 bg-rose-500/10 text-rose-400 rounded-lg hover:bg-rose-500/30 text-[10px]">Hapus</button>
-                              </td>
-                            </tr>
-                          ))}
-                        </tbody>
-                      </table>
+                    <div className="space-y-2.5 max-h-72 overflow-y-auto pr-1 divide-y divide-slate-800">
+                      {actionHistory.map(hist => (
+                        <div key={hist.id} className="pt-2.5 flex items-start justify-between text-xs">
+                          <div className="flex items-start space-x-3">
+                            <span className={`px-2 py-0.5 rounded text-[10px] font-mono font-bold uppercase mt-0.5 ${
+                              hist.type === 'TAMBAH_SKU' ? 'bg-blue-500/20 text-blue-300 border border-blue-500/30' :
+                              hist.type === 'HAPUS_SKU' ? 'bg-rose-500/20 text-rose-300 border border-rose-500/30' :
+                              hist.type.includes('ACC_QC') ? 'bg-indigo-500/20 text-indigo-300 border border-indigo-500/30' :
+                              'bg-emerald-500/20 text-emerald-300 border border-emerald-500/30'
+                            }`}>
+                              {hist.type.replace(/_/g, ' ')}
+                            </span>
+                            <div>
+                              <span className="font-mono font-bold text-slate-200">{hist.sku}</span>
+                              <p className="text-slate-400 text-[11px]">{hist.details}</p>
+                            </div>
+                          </div>
+                          <div className="text-right">
+                            <span className="text-[10px] text-slate-400 block">{hist.timestamp}</span>
+                            <span className="text-[10px] font-semibold text-slate-300">By: {hist.actor} ({hist.role.toUpperCase()})</span>
+                          </div>
+                        </div>
+                      ))}
                     </div>
                   )}
                 </div>
@@ -1032,84 +1142,128 @@
               </div>
             )}
 
-            {activeTab === 'export' && (
+            {activeTab === 'export' && currentRole === 'koordinator' && (
               <div className="max-w-4xl mx-auto space-y-6">
-                <div className="bg-slate-800/90 border border-slate-700/80 rounded-2xl p-6 shadow-xl">
-                  <div className="flex items-center justify-between mb-4">
-                    <div>
-                      <h2 className="text-base font-bold text-white">Download Template Excel Native (.xls / .xlsx)</h2>
-                      <p className="text-xs text-slate-400">Unduh file template berformat rapi (Header Biru, Border Tegas & Zebra Striping)</p>
-                    </div>
-                    <span className="bg-emerald-500/10 text-emerald-400 border border-emerald-500/30 text-xs px-3 py-1 rounded-full font-mono font-bold">
-                      {masterStock.length} SKU Master Tersedia
-                    </span>
-                  </div>
-
-                  <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mt-4">
-                    <div className="bg-slate-900/80 border border-indigo-500/30 rounded-xl p-4 flex flex-col justify-between">
-                      <div>
-                        <span className="text-indigo-300 text-xs font-bold block mb-2">Template 1: Data Master (3 Baris Contoh)</span>
-                        <p className="text-[11px] text-slate-400 mb-3 leading-relaxed">Berisi contoh format minimum untuk import data master baru agar form tetap bersih.</p>
-                      </div>
-                      <button onClick={handleDownloadMasterTemplate} className="w-full bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-semibold py-2.5 rounded-lg shadow-md transition-all">Download Template Master</button>
-                    </div>
-
-                    <div className="bg-slate-900/80 border border-blue-500/30 rounded-xl p-4 flex flex-col justify-between">
-                      <div>
-                        <span className="text-blue-300 text-xs font-bold block mb-2">Template 2: Qty Stok ({masterStock.length} SKU)</span>
-                        <p className="text-[11px] text-slate-400 mb-3 leading-relaxed">Memuat seluruh SKU untuk memperbarui Qty System & Rasio Koli.</p>
-                      </div>
-                      <button onClick={handleDownloadQtyTemplate} className="w-full bg-blue-600 hover:bg-blue-500 text-white text-xs font-semibold py-2.5 rounded-lg shadow-md transition-all">Download Template Qty</button>
-                    </div>
-
-                    <div className="bg-slate-900/80 border border-emerald-500/30 rounded-xl p-4 flex flex-col justify-between">
-                      <div>
-                        <span className="text-emerald-300 text-xs font-bold block mb-2">Template 3: Master Sync & Hapus SKU</span>
-                        <p className="text-[11px] text-slate-400 mb-3 leading-relaxed">Memuat seluruh SKU untuk edit data master atau menghapus baris SKU yang salah.</p>
-                      </div>
-                      <button onClick={handleDownloadMasterSyncTemplate} className="w-full bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-semibold py-2.5 rounded-lg shadow-md transition-all">Download Template Sync/Hapus</button>
-                    </div>
-                  </div>
+                {/* Navigasi Sub-Tab Import & Laporan */}
+                <div className="flex bg-slate-800/90 border border-slate-700/80 p-1.5 rounded-2xl shadow-xl">
+                  <button onClick={() => setExportSubTab('upload')} className={`flex-1 py-2.5 text-xs font-semibold rounded-xl transition-all ${exportSubTab === 'upload' ? 'bg-blue-600 text-white shadow-md' : 'text-slate-400 hover:text-white'}`}>Upload & Template Excel</button>
+                  <button onClick={() => setExportSubTab('history')} className={`flex-1 py-2.5 text-xs font-semibold rounded-xl transition-all ${exportSubTab === 'history' ? 'bg-blue-600 text-white shadow-md' : 'text-slate-400 hover:text-white'}`}>Histori Import File ({importHistory.length})</button>
                 </div>
 
-                <div className="bg-slate-800/90 border border-slate-700/80 rounded-2xl p-6 shadow-xl relative">
-                  <h2 className="text-base font-bold text-white mb-2">Import File Excel</h2>
-                  <p className="text-xs text-slate-400 mb-4">Pilih opsi import sesuai template yang Anda gunakan</p>
+                {exportSubTab === 'upload' ? (
+                  <>
+                    <div className="bg-slate-800/90 border border-slate-700/80 rounded-2xl p-6 shadow-xl">
+                      <div className="flex items-center justify-between mb-4">
+                        <div>
+                          <h2 className="text-base font-bold text-white">Download Template Excel Native (.xls / .xlsx)</h2>
+                          <p className="text-xs text-slate-400">Unduh file template berformat rapi (Header Biru, Border Tegas & Zebra Striping)</p>
+                        </div>
+                        <span className="bg-emerald-500/10 text-emerald-400 border border-emerald-500/30 text-xs px-3 py-1 rounded-full font-mono font-bold">
+                          {masterStock.length} SKU Master Tersedia
+                        </span>
+                      </div>
 
-                  <div className="grid grid-cols-1 md:grid-cols-3 gap-2 bg-slate-900 p-1.5 rounded-xl border border-slate-700 mb-4">
-                    <button onClick={() => setImportMode('master')} className={`py-2 px-2 text-[11px] font-semibold rounded-lg transition-all ${importMode === 'master' ? 'bg-blue-600 text-white shadow-md' : 'text-slate-400 hover:text-white'}`}>1. Import Data Master Baru</button>
-                    <button onClick={() => setImportMode('qty')} className={`py-2 px-2 text-[11px] font-semibold rounded-lg transition-all ${importMode === 'qty' ? 'bg-blue-600 text-white shadow-md' : 'text-slate-400 hover:text-white'}`}>2. Import Qty Stok Saja</button>
-                    <button onClick={() => setImportMode('sync_delete')} className={`py-2 px-2 text-[11px] font-semibold rounded-lg transition-all ${importMode === 'sync_delete' ? 'bg-emerald-600 text-white shadow-md' : 'text-slate-400 hover:text-white'}`}>3. Sync & Hapus SKU Master</button>
-                  </div>
+                      <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mt-4">
+                        <div className="bg-slate-900/80 border border-indigo-500/30 rounded-xl p-4 flex flex-col justify-between">
+                          <div>
+                            <span className="text-indigo-300 text-xs font-bold block mb-2">Template 1: Data Master (3 Baris Contoh)</span>
+                            <p className="text-[11px] text-slate-400 mb-3 leading-relaxed">Berisi contoh format minimum untuk import data master baru agar form tetap bersih.</p>
+                          </div>
+                          <button onClick={handleDownloadMasterTemplate} className="w-full bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-semibold py-2.5 rounded-lg shadow-md transition-all">Download Template Master</button>
+                        </div>
 
-                  <div className="border-2 border-dashed border-slate-700 rounded-xl p-6 text-center hover:border-blue-500 transition-colors">
-                    <input type="file" accept=".xlsx, .xls, .csv" onChange={handleFileUpload} className="hidden" id="excel-upload-input" />
-                    <label htmlFor="excel-upload-input" className="cursor-pointer flex flex-col items-center">
-                      <span className="text-sm font-semibold text-blue-400">
-                        Upload Excel: {importMode === 'master' ? 'Data Master Baru' : importMode === 'qty' ? 'Qty Stok Saja' : 'Sync & Hapus SKU Master'}
-                      </span>
-                      <span className="text-xs text-slate-500 mt-1">Format .xlsx, .xls, atau .csv didukung</span>
-                    </label>
-                  </div>
+                        <div className="bg-slate-900/80 border border-blue-500/30 rounded-xl p-4 flex flex-col justify-between">
+                          <div>
+                            <span className="text-blue-300 text-xs font-bold block mb-2">Template 2: Qty Stok ({masterStock.length} SKU)</span>
+                            <p className="text-[11px] text-slate-400 mb-3 leading-relaxed">Memuat seluruh SKU untuk memperbarui Qty System & Rasio Koli.</p>
+                          </div>
+                          <button onClick={handleDownloadQtyTemplate} className="w-full bg-blue-600 hover:bg-blue-500 text-white text-xs font-semibold py-2.5 rounded-lg shadow-md transition-all">Download Template Qty</button>
+                        </div>
 
-                  {isProcessingFile && (
-                    <div className="fixed inset-0 z-50 bg-slate-950/80 backdrop-blur-sm flex items-center justify-center p-4">
-                      <div className="bg-slate-900 border border-slate-700 rounded-2xl max-w-md w-full p-6 shadow-2xl text-center space-y-3">
-                        <h3 className="text-base font-bold text-white">Proses Upload Excel ke Cloud</h3>
-                        <p className="text-xs text-slate-400">{uploadStatusMsg}</p>
-                        <div className="w-full bg-slate-800 rounded-full h-3 overflow-hidden p-0.5 border border-slate-700">
-                          <div className="bg-blue-600 h-full rounded-full transition-all duration-300" style={{ width: `${uploadProgress}%` }}></div>
+                        <div className="bg-slate-900/80 border border-emerald-500/30 rounded-xl p-4 flex flex-col justify-between">
+                          <div>
+                            <span className="text-emerald-300 text-xs font-bold block mb-2">Template 3: Master Sync & Hapus SKU</span>
+                            <p className="text-[11px] text-slate-400 mb-3 leading-relaxed">Memuat seluruh SKU untuk edit data master atau menghapus baris SKU yang salah.</p>
+                          </div>
+                          <button onClick={handleDownloadMasterSyncTemplate} className="w-full bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-semibold py-2.5 rounded-lg shadow-md transition-all">Download Template Sync/Hapus</button>
                         </div>
                       </div>
                     </div>
-                  )}
-                </div>
 
-                <div className="bg-slate-800/90 border border-slate-700/80 rounded-2xl p-6 shadow-xl">
-                  <h2 className="text-base font-bold text-white mb-1">Export Laporan Opname ke Excel</h2>
-                  <p className="text-xs text-slate-400 mb-4">Unduh hasil audit fisik terlengkap dengan konversi otomatis Pcs ke Koli & Varian</p>
-                  <button onClick={handleExportToExcel} className="w-full bg-emerald-600 hover:bg-emerald-500 text-white font-semibold py-3 rounded-xl shadow-lg shadow-emerald-600/35 transition-all">Download Laporan Excel Bergaya (.xls / .xlsx)</button>
-                </div>
+                    <div className="bg-slate-800/90 border border-slate-700/80 rounded-2xl p-6 shadow-xl relative">
+                      <h2 className="text-base font-bold text-white mb-2">Import File Excel</h2>
+                      <p className="text-xs text-slate-400 mb-4">Pilih opsi import sesuai template yang Anda gunakan</p>
+
+                      <div className="grid grid-cols-1 md:grid-cols-3 gap-2 bg-slate-900 p-1.5 rounded-xl border border-slate-700 mb-4">
+                        <button onClick={() => setImportMode('master')} className={`py-2 px-2 text-[11px] font-semibold rounded-lg transition-all ${importMode === 'master' ? 'bg-blue-600 text-white shadow-md' : 'text-slate-400 hover:text-white'}`}>1. Import Data Master Baru</button>
+                        <button onClick={() => setImportMode('qty')} className={`py-2 px-2 text-[11px] font-semibold rounded-lg transition-all ${importMode === 'qty' ? 'bg-blue-600 text-white shadow-md' : 'text-slate-400 hover:text-white'}`}>2. Import Qty Stok Saja</button>
+                        <button onClick={() => setImportMode('sync_delete')} className={`py-2 px-2 text-[11px] font-semibold rounded-lg transition-all ${importMode === 'sync_delete' ? 'bg-emerald-600 text-white shadow-md' : 'text-slate-400 hover:text-white'}`}>3. Sync & Hapus SKU Master</button>
+                      </div>
+
+                      <div className="border-2 border-dashed border-slate-700 rounded-xl p-6 text-center hover:border-blue-500 transition-colors">
+                        <input type="file" accept=".xlsx, .xls, .csv" onChange={handleFileUpload} className="hidden" id="excel-upload-input" />
+                        <label htmlFor="excel-upload-input" className="cursor-pointer flex flex-col items-center">
+                          <span className="text-sm font-semibold text-blue-400">
+                            Upload Excel: {importMode === 'master' ? 'Data Master Baru' : importMode === 'qty' ? 'Qty Stok Saja' : 'Sync & Hapus SKU Master'}
+                          </span>
+                          <span className="text-xs text-slate-500 mt-1">Format .xlsx, .xls, atau .csv didukung</span>
+                        </label>
+                      </div>
+
+                      {isProcessingFile && (
+                        <div className="fixed inset-0 z-50 bg-slate-950/80 backdrop-blur-sm flex items-center justify-center p-4">
+                          <div className="bg-slate-900 border border-slate-700 rounded-2xl max-w-md w-full p-6 shadow-2xl text-center space-y-3">
+                            <h3 className="text-base font-bold text-white">Proses Upload Excel ke Cloud</h3>
+                            <p className="text-xs text-slate-400">{uploadStatusMsg}</p>
+                            <div className="w-full bg-slate-800 rounded-full h-3 overflow-hidden p-0.5 border border-slate-700">
+                              <div className="bg-blue-600 h-full rounded-full transition-all duration-300" style={{ width: `${uploadProgress}%` }}></div>
+                            </div>
+                          </div>
+                        </div>
+                      )}
+                    </div>
+
+                    <div className="bg-slate-800/90 border border-slate-700/80 rounded-2xl p-6 shadow-xl">
+                      <h2 className="text-base font-bold text-white mb-1">Export Laporan Opname ke Excel</h2>
+                      <p className="text-xs text-slate-400 mb-4">Unduh hasil audit fisik terlengkap dengan konversi otomatis Pcs ke Koli & Varian</p>
+                      <button onClick={handleExportToExcel} className="w-full bg-emerald-600 hover:bg-emerald-500 text-white font-semibold py-3 rounded-xl shadow-lg shadow-emerald-600/35 transition-all">Download Laporan Excel Bergaya (.xls / .xlsx)</button>
+                    </div>
+                  </>
+                ) : (
+                  <div className="bg-slate-800/90 border border-slate-700/80 rounded-2xl p-6 shadow-xl space-y-4">
+                    <h2 className="text-base font-bold text-white">Histori File Excel yang Di-import</h2>
+                    <p className="text-xs text-slate-400">Catatan riwayat file template yang pernah diunggah beserta waktu dan modus importnya</p>
+
+                    {importHistory.length === 0 ? (
+                      <div className="text-center py-8 text-xs text-slate-500 border border-dashed border-slate-700 rounded-xl">
+                        Belum ada file Excel yang di-import pada sesi ini
+                      </div>
+                    ) : (
+                      <div className="overflow-x-auto">
+                        <table className="w-full text-left text-xs">
+                          <thead className="bg-slate-900 text-slate-400 font-mono uppercase border-b border-slate-700">
+                            <tr>
+                              <th className="p-3">Waktu Import</th>
+                              <th className="p-3">Nama File Excel</th>
+                              <th className="p-3">Mode / Menu Import</th>
+                              <th className="p-3">Uploader (Koordinator)</th>
+                            </tr>
+                          </thead>
+                          <tbody className="divide-y divide-slate-800">
+                            {importHistory.map(imp => (
+                              <tr key={imp.id} className="hover:bg-slate-700/30">
+                                <td className="p-3 font-mono text-slate-300">{imp.timestamp}</td>
+                                <td className="p-3 font-semibold text-blue-400">{imp.fileName}</td>
+                                <td className="p-3"><span className="px-2 py-0.5 rounded text-[10px] font-bold bg-emerald-500/20 text-emerald-300 border border-emerald-500/30">{imp.mode}</span></td>
+                                <td className="p-3 text-slate-300">{imp.uploader}</td>
+                              </tr>
+                            ))}
+                          </tbody>
+                        </table>
+                      </div>
+                    )}
+                  </div>
+                )}
               </div>
             )}
 
