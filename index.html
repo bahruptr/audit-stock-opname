@@ -38,7 +38,15 @@
       { id: 't3', title: 'Opname Total Area Bulk Gudang C', description: 'Rekonsiliasi akhir bulan barang berat', period: 'Bulanan', priority: 'High', zone: 'Zona C3', dueDate: '2026-11-30', completed: false }
     ];
 
+    const DEFAULT_ACCOUNTS = [
+      { key: 'koordinator', name: 'Koordinator (Bahrudin)', role: 'koordinator', pass: 'admin123' },
+      { key: 'auditor1', name: 'Auditor 1', role: 'auditor', pass: 'auditor123' },
+      { key: 'auditor2', name: 'Auditor 2', role: 'auditor', pass: 'auditor123' },
+      { key: 'qc', name: 'Checker / QC', role: 'qc', pass: 'qc123' }
+    ];
+
     function App() {
+      // TIDAK ADA AUTO-LOGIN: Setiap kali link dibuka / refresh, wajib ke halaman login
       const [isLoggedIn, setIsLoggedIn] = useState(false);
       const [currentUser, setCurrentUser] = useState('');
       const [currentRole, setCurrentRole] = useState(''); 
@@ -46,18 +54,9 @@
       const [loginPassword, setLoginPassword] = useState('');
       const [loginError, setLoginError] = useState('');
 
-      // State Manajemen Akun Tim
-      const [accounts, setAccounts] = useState(() => {
-        const saved = localStorage.getItem('audit_custom_accounts');
-        return saved ? JSON.parse(saved) : [
-          { key: 'koordinator', name: 'Koordinator (Bahrudin)', role: 'koordinator', pass: 'admin123' },
-          { key: 'auditor1', name: 'Auditor 1', role: 'auditor', pass: 'auditor123' },
-          { key: 'auditor2', name: 'Auditor 2', role: 'auditor', pass: 'auditor123' },
-          { key: 'qc', name: 'Checker / QC', role: 'qc', pass: 'qc123' }
-        ];
-      });
+      // State Akun yang disinkronkan ke Cloud Supabase
+      const [accounts, setAccounts] = useState(DEFAULT_ACCOUNTS);
 
-      // State Form Edit Akun di Pengaturan Akun
       const [editAccountState, setEditAccountState] = useState({
         koordinator: { name: 'Koordinator (Bahrudin)', pass: '' },
         auditor1: { name: 'Auditor 1', pass: '' },
@@ -91,63 +90,35 @@
       const defaultZones = ['Zona A1', 'Zona A2', 'Zona B1', 'Zona B2', 'Zona C1', 'Zona C3', 'Bulk Area', 'Lainnya...'];
 
       useEffect(() => {
-        const savedUser = localStorage.getItem('audit_user');
-        const savedRole = localStorage.getItem('audit_role');
-        if (savedUser && savedRole) {
-          setCurrentUser(savedUser);
-          setCurrentRole(savedRole);
-          setIsLoggedIn(true);
-        }
         fetchCloudData();
       }, []);
-
-      const handleLogin = (e) => {
-        e.preventDefault();
-        setLoginError('');
-
-        const targetAcc = accounts.find(a => a.key === loginInputKey);
-        if (!targetAcc || targetAcc.pass !== loginPassword) {
-          setLoginError('Password atau akun salah!');
-          return;
-        }
-
-        setCurrentUser(targetAcc.name);
-        setCurrentRole(targetAcc.role);
-        setIsLoggedIn(true);
-        localStorage.setItem('audit_user', targetAcc.name);
-        localStorage.setItem('audit_role', targetAcc.role);
-      };
-
-      const handleLogout = () => {
-        setIsLoggedIn(false);
-        setCurrentUser('');
-        setCurrentRole('');
-        setLoginPassword('');
-        localStorage.removeItem('audit_user');
-        localStorage.removeItem('audit_role');
-      };
-
-      const handleSaveAccountSettings = (key) => {
-        const currentEdit = editAccountState[key];
-        const updated = accounts.map(acc => {
-          if (acc.key === key) {
-            return {
-              ...acc,
-              name: currentEdit.name ? currentEdit.name : acc.name,
-              pass: currentEdit.pass ? currentEdit.pass : acc.pass
-            };
-          }
-          return acc;
-        });
-        setAccounts(updated);
-        localStorage.setItem('audit_custom_accounts', JSON.stringify(updated));
-        alert('Pengaturan akun berhasil disimpan!');
-      };
 
       const fetchCloudData = async () => {
         try {
           setDbStatus('Memuat data cloud...');
           
+          // Ambil data akun dari Supabase agar sinkron antar device (PC & HP)
+          const { data: accData, error: accError } = await supabase.from('app_accounts').select('*');
+          if (!accError && accData && accData.length > 0) {
+            const formattedAccs = accData.map(a => ({
+              key: a.account_key,
+              name: a.account_name,
+              role: a.role,
+              pass: a.password
+            }));
+            setAccounts(formattedAccs);
+          } else {
+            // Jika tabel app_accounts belum ada/kosong, buatkan default ke Supabase
+            for (const acc of DEFAULT_ACCOUNTS) {
+              await supabase.from('app_accounts').upsert({
+                account_key: acc.key,
+                account_name: acc.name,
+                role: acc.role,
+                password: acc.pass
+              }, { onConflict: 'account_key' });
+            }
+          }
+
           const { data: skuData, error: skuError } = await supabase.from('master_skus').select('*');
           if (skuError) throw skuError;
           if (skuData && skuData.length > 0) {
@@ -197,6 +168,59 @@
         } catch (err) {
           console.error('Gagal memuat data cloud:', err.message);
           setDbStatus('🔴 Mode Offline / Gagal Sinkron');
+        }
+      };
+
+      const handleLogin = (e) => {
+        e.preventDefault();
+        setLoginError('');
+
+        const targetAcc = accounts.find(a => a.key === loginInputKey);
+        if (!targetAcc || targetAcc.pass !== loginPassword) {
+          setLoginError('Password atau akun salah!');
+          return;
+        }
+
+        setCurrentUser(targetAcc.name);
+        setCurrentRole(targetAcc.role);
+        setIsLoggedIn(true);
+      };
+
+      const handleLogout = () => {
+        setIsLoggedIn(false);
+        setCurrentUser('');
+        setCurrentRole('');
+        setLoginPassword('');
+      };
+
+      // Simpan perubahan akun langsung ke Supabase agar PC & HP langsung sinkron
+      const handleSaveAccountSettings = async (key) => {
+        const currentEdit = editAccountState[key];
+        const targetAcc = accounts.find(a => a.key === key);
+        
+        const newName = currentEdit.name ? currentEdit.name : targetAcc.name;
+        const newPass = currentEdit.pass ? currentEdit.pass : targetAcc.pass;
+
+        const updated = accounts.map(acc => {
+          if (acc.key === key) {
+            return { ...acc, name: newName, pass: newPass };
+          }
+          return acc;
+        });
+
+        setAccounts(updated);
+
+        try {
+          await supabase.from('app_accounts').upsert({
+            account_key: key,
+            account_name: newName,
+            role: targetAcc.role,
+            password: newPass
+          }, { onConflict: 'account_key' });
+          alert('Pengaturan akun & password berhasil disimpan ke Cloud Supabase (Sinkron di semua device)!');
+        } catch (err) {
+          console.error('Gagal update akun ke cloud:', err);
+          alert('Gagal menyimpan ke cloud database.');
         }
       };
 
@@ -511,7 +535,7 @@
         reader.readAsArrayBuffer(file);
       };
 
-      // TAMPILAN HALAMAN LOGIN
+      // TAMPILAN HALAMAN LOGIN (Wajib Tampil Setiap Kali Buka Link Baru / Refresh)
       if (!isLoggedIn) {
         return (
           <div className="min-h-screen bg-slate-950 flex items-center justify-center p-4">
@@ -521,7 +545,7 @@
                   <svg className="w-8 h-8" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" d="M12 15v2m-6 4h12a2 2 0 002-2v-6a2 2 0 00-2-2H6a2 2 0 00-2 2v6a2 2 0 002 2zm10-10V7a4 4 0 00-8 0v4h8z"/></svg>
                 </div>
                 <h1 className="text-xl font-bold text-white">AuditStock Pro Security</h1>
-                <p className="text-xs text-slate-400 mt-1">Pilih profil dan masukkan password akses peran Anda</p>
+                <p className="text-xs text-slate-400 mt-1">Silakan login terlebih dahulu untuk mengakses sistem</p>
               </div>
 
               {loginError && (
@@ -554,7 +578,6 @@
                     className="w-full bg-slate-950 border border-slate-700 rounded-xl px-4 py-3 text-sm text-white focus:outline-none focus:border-blue-500 font-mono"
                     autoFocus
                   />
-                  <p className="text-[10px] text-slate-500 mt-1">Default Password: Koordinator (<code className="text-slate-400">admin123</code>), Auditor (<code className="text-slate-400">auditor123</code>), QC (<code className="text-slate-400">qc123</code>)</p>
                 </div>
 
                 <button type="submit" className="w-full bg-blue-600 hover:bg-blue-500 text-white font-semibold py-3 rounded-xl shadow-lg transition-all text-sm">
@@ -832,8 +855,8 @@
                   <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mt-4">
                     <div className="bg-slate-900/80 border border-indigo-500/30 rounded-xl p-4 flex flex-col justify-between">
                       <div>
-                        <span className="text-indigo-300 text-xs font-bold block mb-2">Template 1: Data Master (Point 1-9)</span>
-                        <p className="text-[11px] text-slate-400 mb-3 leading-relaxed">Kolom: Nama Produk, Variasi Warna, Variasi Ukuran, SKU Induk, SKU Variasi, Sales Rata2/Bulan, Kategori Moving, Harga, Kategori Harga.</p>
+                        <span className="text-indigo-300 text-xs font-bold block mb-2">Template 1: Data Master (3 Baris Contoh)</span>
+                        <p className="text-[11px] text-slate-400 mb-3 leading-relaxed">Berisi contoh format minimum untuk import data master baru agar form tetap bersih.</p>
                       </div>
                       <button onClick={handleDownloadMasterTemplate} className="w-full bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-semibold py-2.5 rounded-lg shadow-md transition-all">Download Template Master</button>
                     </div>
@@ -890,7 +913,7 @@
               <div className="max-w-2xl mx-auto space-y-6">
                 <div className="bg-slate-800/90 border border-slate-700/80 rounded-2xl p-6 shadow-xl space-y-4">
                   <h2 className="text-base font-bold text-white">Pengaturan Akun & Manajemen Akses Tim</h2>
-                  <p className="text-xs text-slate-400">Sebagai Koordinator, Anda dapat mengubah nama tampilan atau password untuk setiap akun anggota tim.</p>
+                  <p className="text-xs text-slate-400">Sebagai Koordinator, setiap perubahan nama atau password di sini akan langsung tersinkron ke Cloud Supabase dan berlaku di semua perangkat (PC & HP).</p>
 
                   <div className="space-y-4 pt-2">
                     {accounts.map(acc => (
@@ -905,6 +928,7 @@
                             <input 
                               type="text" 
                               value={editAccountState[acc.key].name} 
+                              placeholder={acc.name}
                               onChange={(e) => {
                                 const val = e.target.value;
                                 setEditAccountState(prev => ({
@@ -937,7 +961,7 @@
                             onClick={() => handleSaveAccountSettings(acc.key)}
                             className="bg-blue-600 hover:bg-blue-500 text-white text-xs font-semibold px-4 py-2 rounded-lg transition-all shadow-md"
                           >
-                            Simpan Perubahan Akun
+                            Simpan & Sinkron ke Cloud
                           </button>
                         </div>
                       </div>
