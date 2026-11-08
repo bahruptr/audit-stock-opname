@@ -46,7 +46,7 @@
       const [loginPassword, setLoginPassword] = useState('');
       const [loginError, setLoginError] = useState('');
 
-      // State Manajemen Akun (Dapat diatur oleh Koordinator)
+      // State Manajemen Akun Tim
       const [accounts, setAccounts] = useState(() => {
         const saved = localStorage.getItem('audit_custom_accounts');
         return saved ? JSON.parse(saved) : [
@@ -55,6 +55,14 @@
           { key: 'auditor2', name: 'Auditor 2', role: 'auditor', pass: 'auditor123' },
           { key: 'qc', name: 'Checker / QC', role: 'qc', pass: 'qc123' }
         ];
+      });
+
+      // State Form Edit Akun di Pengaturan Akun
+      const [editAccountState, setEditAccountState] = useState({
+        koordinator: { name: 'Koordinator (Bahrudin)', pass: '' },
+        auditor1: { name: 'Auditor 1', pass: '' },
+        auditor2: { name: 'Auditor 2', pass: '' },
+        qc: { name: 'Checker / QC', pass: '' }
       });
 
       const [activeTab, setActiveTab] = useState('opname');
@@ -119,10 +127,15 @@
         localStorage.removeItem('audit_role');
       };
 
-      const handleUpdateAccount = (key, newName, newPass) => {
+      const handleSaveAccountSettings = (key) => {
+        const currentEdit = editAccountState[key];
         const updated = accounts.map(acc => {
           if (acc.key === key) {
-            return { ...acc, name: newName || acc.name, pass: newPass ? newPass : acc.pass };
+            return {
+              ...acc,
+              name: currentEdit.name ? currentEdit.name : acc.name,
+              pass: currentEdit.pass ? currentEdit.pass : acc.pass
+            };
           }
           return acc;
         });
@@ -880,47 +893,55 @@
                   <p className="text-xs text-slate-400">Sebagai Koordinator, Anda dapat mengubah nama tampilan atau password untuk setiap akun anggota tim.</p>
 
                   <div className="space-y-4 pt-2">
-                    {accounts.map(acc => {
-                      const [localName, setLocalName] = useState(acc.name);
-                      const [localPass, setLocalPass] = useState('');
-                      return (
-                        <div key={acc.key} className="bg-slate-900 border border-slate-700/80 rounded-xl p-4 space-y-3">
-                          <div className="flex justify-between items-center">
-                            <span className="text-xs font-bold text-blue-400 uppercase">Peran: {acc.role}</span>
-                            <span className="text-[10px] text-slate-500 font-mono">Key: {acc.key}</span>
+                    {accounts.map(acc => (
+                      <div key={acc.key} className="bg-slate-900 border border-slate-700/80 rounded-xl p-4 space-y-3">
+                        <div className="flex justify-between items-center">
+                          <span className="text-xs font-bold text-blue-400 uppercase">Peran: {acc.role}</span>
+                          <span className="text-[10px] text-slate-500 font-mono">Key: {acc.key}</span>
+                        </div>
+                        <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                          <div>
+                            <label className="block text-[11px] text-slate-400 mb-1">Nama Tampilan / User</label>
+                            <input 
+                              type="text" 
+                              value={editAccountState[acc.key].name} 
+                              onChange={(e) => {
+                                const val = e.target.value;
+                                setEditAccountState(prev => ({
+                                  ...prev,
+                                  [acc.key]: { ...prev[acc.key], name: val }
+                                }));
+                              }} 
+                              className="w-full bg-slate-950 border border-slate-700 rounded-lg px-3 py-2 text-xs text-white"
+                            />
                           </div>
-                          <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-                            <div>
-                              <label className="block text-[11px] text-slate-400 mb-1">Nama Tampilan / User</label>
-                              <input 
-                                type="text" 
-                                value={localName} 
-                                onChange={(e) => setLocalName(e.target.value)} 
-                                className="w-full bg-slate-950 border border-slate-700 rounded-lg px-3 py-2 text-xs text-white"
-                              />
-                            </div>
-                            <div>
-                              <label className="block text-[11px] text-slate-400 mb-1">Password Baru (Opsional)</label>
-                              <input 
-                                type="password" 
-                                placeholder="Kosongkan jika tetap" 
-                                value={localPass} 
-                                onChange={(e) => setLocalPass(e.target.value)} 
-                                className="w-full bg-slate-950 border border-slate-700 rounded-lg px-3 py-2 text-xs text-white font-mono"
-                              />
-                            </div>
-                          </div>
-                          <div className="flex justify-end">
-                            <button 
-                              onClick={() => handleUpdateAccount(acc.key, localName, localPass)}
-                              className="bg-blue-600 hover:bg-blue-500 text-white text-xs font-semibold px-4 py-2 rounded-lg transition-all shadow-md"
-                            >
-                              Simpan Perubahan Akun
-                            </button>
+                          <div>
+                            <label className="block text-[11px] text-slate-400 mb-1">Password Baru (Opsional)</label>
+                            <input 
+                              type="password" 
+                              placeholder="Kosongkan jika tetap" 
+                              value={editAccountState[acc.key].pass} 
+                              onChange={(e) => {
+                                const val = e.target.value;
+                                setEditAccountState(prev => ({
+                                  ...prev,
+                                  [acc.key]: { ...prev[acc.key], pass: val }
+                                }));
+                              }} 
+                              className="w-full bg-slate-950 border border-slate-700 rounded-lg px-3 py-2 text-xs text-white font-mono"
+                            />
                           </div>
                         </div>
-                      );
-                    })}
+                        <div className="flex justify-end">
+                          <button 
+                            onClick={() => handleSaveAccountSettings(acc.key)}
+                            className="bg-blue-600 hover:bg-blue-500 text-white text-xs font-semibold px-4 py-2 rounded-lg transition-all shadow-md"
+                          >
+                            Simpan Perubahan Akun
+                          </button>
+                        </div>
+                      </div>
+                    ))}
                   </div>
                 </div>
               </div>
