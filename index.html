@@ -42,9 +42,20 @@
       const [isLoggedIn, setIsLoggedIn] = useState(false);
       const [currentUser, setCurrentUser] = useState('');
       const [currentRole, setCurrentRole] = useState(''); 
-      const [loginInputName, setLoginInputName] = useState('Koordinator (Bahrudin)');
+      const [loginInputKey, setLoginInputKey] = useState('koordinator');
       const [loginPassword, setLoginPassword] = useState('');
       const [loginError, setLoginError] = useState('');
+
+      // State Manajemen Akun (Dapat diatur oleh Koordinator)
+      const [accounts, setAccounts] = useState(() => {
+        const saved = localStorage.getItem('audit_custom_accounts');
+        return saved ? JSON.parse(saved) : [
+          { key: 'koordinator', name: 'Koordinator (Bahrudin)', role: 'koordinator', pass: 'admin123' },
+          { key: 'auditor1', name: 'Auditor 1', role: 'auditor', pass: 'auditor123' },
+          { key: 'auditor2', name: 'Auditor 2', role: 'auditor', pass: 'auditor123' },
+          { key: 'qc', name: 'Checker / QC', role: 'qc', pass: 'qc123' }
+        ];
+      });
 
       const [activeTab, setActiveTab] = useState('opname');
       const [masterStock, setMasterStock] = useState(INITIAL_MASTER_STOCK);
@@ -68,9 +79,6 @@
       const [showSuggestions, setShowSuggestions] = useState(false);
 
       const [todoPeriod, setTodoPeriod] = useState('Harian');
-      const [newTodoTitle, setNewTodoTitle] = useState('');
-      const [newTodoDesc, setNewTodoDesc] = useState('');
-      const [showAddTodoModal, setShowAddTodoModal] = useState(false);
 
       const defaultZones = ['Zona A1', 'Zona A2', 'Zona B1', 'Zona B2', 'Zona C1', 'Zona C3', 'Bulk Area', 'Lainnya...'];
 
@@ -89,23 +97,17 @@
         e.preventDefault();
         setLoginError('');
 
-        let role = '';
-        if (loginInputName.includes('Koordinator')) {
-          if (loginPassword !== 'admin123') { setLoginError('Password Koordinator salah! (admin123)'); return; }
-          role = 'koordinator';
-        } else if (loginInputName.includes('Auditor')) {
-          if (loginPassword !== 'auditor123') { setLoginError('Password Auditor salah! (auditor123)'); return; }
-          role = 'auditor';
-        } else if (loginInputName.includes('QC')) {
-          if (loginPassword !== 'qc123') { setLoginError('Password QC salah! (qc123)'); return; }
-          role = 'qc';
+        const targetAcc = accounts.find(a => a.key === loginInputKey);
+        if (!targetAcc || targetAcc.pass !== loginPassword) {
+          setLoginError('Password atau akun salah!');
+          return;
         }
 
-        setCurrentUser(loginInputName);
-        setCurrentRole(role);
+        setCurrentUser(targetAcc.name);
+        setCurrentRole(targetAcc.role);
         setIsLoggedIn(true);
-        localStorage.setItem('audit_user', loginInputName);
-        localStorage.setItem('audit_role', role);
+        localStorage.setItem('audit_user', targetAcc.name);
+        localStorage.setItem('audit_role', targetAcc.role);
       };
 
       const handleLogout = () => {
@@ -115,6 +117,18 @@
         setLoginPassword('');
         localStorage.removeItem('audit_user');
         localStorage.removeItem('audit_role');
+      };
+
+      const handleUpdateAccount = (key, newName, newPass) => {
+        const updated = accounts.map(acc => {
+          if (acc.key === key) {
+            return { ...acc, name: newName || acc.name, pass: newPass ? newPass : acc.pass };
+          }
+          return acc;
+        });
+        setAccounts(updated);
+        localStorage.setItem('audit_custom_accounts', JSON.stringify(updated));
+        alert('Pengaturan akun berhasil disimpan!');
       };
 
       const fetchCloudData = async () => {
@@ -350,6 +364,22 @@
         }
       };
 
+      const handleDownloadMasterTemplate = () => {
+        const headers = ['No', 'Nama Produk', 'Variasi Warna', 'Variasi Ukuran', 'SKU Induk', 'SKU Variasi', 'Sales Rata2 / Bulan', 'Kategori Moving Barang', 'Harga Barang', 'Kategori Harga Barang'];
+        const rows = [
+          [1, 'Sepatu Running Speed', 'Merah', '42', 'SKU-RUN-SPD', 'SKU-RUN-SPD-RED-42', 120, 'Fast Moving', 550000, 'Medium Value'],
+          [2, 'Tas BackPack Travel', 'Hitam', '30L', 'SKU-BAG-TRV', 'SKU-BAG-TRV-BLK-30L', 15, 'Slow Moving', 1850000, 'High Value'],
+          [3, 'Lemari Jati Jepara', 'Cokelat', '1x2m', 'Lemari Jati', 'lemari-jati-coklat-2m', 275, 'Fast Moving', 2000000, 'High Value']
+        ];
+        downloadNativeExcel('Master Data', headers, rows, 'Template_Master_Data.xlsx');
+      };
+
+      const handleDownloadQtyTemplate = () => {
+        const headers = ['No', 'SKU Variasi', 'Qty System', 'Isi Per Karung'];
+        const rows = masterStock.map((item, index) => [index + 1, item.sku, item.systemQty || 0, item.conversionRatio || 50]);
+        downloadNativeExcel('Qty System', headers, rows, 'Template_Qty_Stok.xlsx');
+      };
+
       const handleExportToExcel = () => {
         if (currentRole !== 'koordinator') {
           alert('Hanya Koordinator yang dapat mengekspor laporan akhir!');
@@ -382,7 +412,7 @@
 
       const handleFileUpload = (e) => {
         if (currentRole !== 'koordinator') {
-          alert('Akses Ditolak! Hanya Koordinator yang berhak melakukan import master data.');
+          alert('Akses Ditolak! Hanya Koordinator yang berhak melakukan import data.');
           return;
         }
         const file = e.target.files[0];
@@ -399,33 +429,62 @@
             const json = window.XLSX.utils.sheet_to_json(workbook.Sheets[firstSheetName], { defval: '', raw: false });
             
             let updatedMaster = [...masterStock];
-            for (const row of json) {
-              const findValue = (names) => {
-                const cleanedNames = names.map(cleanKey);
-                for (const k of Object.keys(row)) {
-                  if (cleanedNames.includes(cleanKey(k))) return row[k];
-                }
-                return '';
-              };
-              const sku = String(findValue(['SKU Variasi', 'SKU'])).trim();
-              if (!sku) continue;
-              const name = String(findValue(['Nama Produk', 'NamaBarang']) || 'Barang Baru').trim();
-              const systemQty = parseNumber(findValue(['Qty System', 'Qty']));
-              const ratio = parseNumber(findValue(['Isi Per Karung', 'Rasio'])) || 50;
+            if (importMode === 'master') {
+              for (const row of json) {
+                const findValue = (names) => {
+                  const cleanedNames = names.map(cleanKey);
+                  for (const k of Object.keys(row)) {
+                    if (cleanedNames.includes(cleanKey(k))) return row[k];
+                  }
+                  return '';
+                };
+                const sku = String(findValue(['SKU Variasi', 'SKU'])).trim();
+                if (!sku) continue;
+                const name = String(findValue(['Nama Produk', 'NamaBarang']) || 'Barang Baru').trim();
+                const color = String(findValue(['Variasi Warna', 'Warna']) || '-').trim();
+                const size = String(findValue(['Variasi Ukuran', 'Ukuran']) || '-').trim();
+                const skuInduk = String(findValue(['SKU Induk']) || '-').trim();
+                const sales = parseNumber(findValue(['Sales Rata2 / Bulan', 'Sales']));
+                const movingCategory = String(findValue(['Kategori Moving Barang', 'Kategori Moving']) || 'Medium Moving').trim();
+                const price = parseNumber(findValue(['Harga Barang', 'Harga']));
+                const priceCategory = String(findValue(['Kategori Harga Barang']) || 'Medium Value').trim();
 
-              const existingIndex = updatedMaster.findIndex(item => item.sku.toLowerCase() === sku.toLowerCase());
-              if (existingIndex >= 0) {
-                updatedMaster[existingIndex].systemQty = systemQty || updatedMaster[existingIndex].systemQty;
-                updatedMaster[existingIndex].conversionRatio = ratio;
-              } else {
-                updatedMaster.push({ id: sku, name, color: '-', size: '-', skuInduk: '-', sku, salesPerMonth: 0, movingCategory: 'Medium Moving', price: 0, priceCategory: 'Medium Value', zone: 'Zona A1', systemQty, conversionRatio: ratio });
+                const existingIndex = updatedMaster.findIndex(item => item.sku.toLowerCase() === sku.toLowerCase());
+                const newItem = { id: existingIndex >= 0 ? updatedMaster[existingIndex].id : sku, name, color, size, skuInduk, sku, salesPerMonth: sales, movingCategory, price, priceCategory, zone: 'Zona A1', systemQty: existingIndex >= 0 ? updatedMaster[existingIndex].systemQty : 0, conversionRatio: 50 };
+                
+                if (existingIndex >= 0) updatedMaster[existingIndex] = { ...updatedMaster[existingIndex], ...newItem };
+                else updatedMaster.push(newItem);
+
+                await supabase.from('master_skus').upsert({
+                  sku: sku, name: name, color: color, size: size, sku_induk: skuInduk, sku_variasi: sku,
+                  sales_avg: sales, moving_category: movingCategory, price: price, price_category: priceCategory,
+                  system_qty: existingIndex >= 0 ? updatedMaster[existingIndex].systemQty : 0, conversion_ratio: 50
+                });
               }
+            } else {
+              for (const row of json) {
+                const findValue = (names) => {
+                  const cleanedNames = names.map(cleanKey);
+                  for (const k of Object.keys(row)) {
+                    if (cleanedNames.includes(cleanKey(k))) return row[k];
+                  }
+                  return '';
+                };
+                const sku = String(findValue(['SKU Variasi', 'SKU'])).trim();
+                if (!sku) continue;
+                const newQty = parseNumber(findValue(['Qty System', 'Qty']));
+                const ratio = parseNumber(findValue(['Isi Per Karung', 'Rasio'])) || 50;
+                const existingIndex = updatedMaster.findIndex(item => item.sku.toLowerCase() === sku.toLowerCase());
+                
+                if (existingIndex >= 0) {
+                  updatedMaster[existingIndex].systemQty = newQty;
+                  updatedMaster[existingIndex].conversionRatio = ratio;
+                } else {
+                  updatedMaster.push({ id: sku, name: 'Item (' + sku + ')', color: '-', size: '-', skuInduk: '-', sku, salesPerMonth: 0, movingCategory: 'Medium Moving', price: 0, priceCategory: 'Medium Value', zone: 'Zona A1', systemQty: newQty, conversionRatio: ratio });
+                }
 
-              await supabase.from('master_skus').upsert({
-                sku: sku, name: name, color: '-', size: '-', sku_induk: '-', sku_variasi: sku,
-                sales_avg: 0, moving_category: 'Medium Moving', price: 0, price_category: 'Medium Value',
-                system_qty: systemQty, conversion_ratio: ratio
-              });
+                await supabase.from('master_skus').update({ system_qty: newQty, conversion_ratio: ratio }).eq('sku', sku);
+              }
             }
             setMasterStock(updatedMaster);
             setUploadProgress(100);
@@ -460,16 +519,15 @@
 
               <form onSubmit={handleLogin} className="space-y-4">
                 <div>
-                  <label className="block text-xs font-semibold uppercase text-slate-300 mb-1">Pilih Peran / Nama Akun</label>
+                  <label className="block text-xs font-semibold uppercase text-slate-300 mb-1">Pilih Akun / Peran</label>
                   <select 
-                    value={loginInputName} 
-                    onChange={(e) => setLoginInputName(e.target.value)} 
+                    value={loginInputKey} 
+                    onChange={(e) => setLoginInputKey(e.target.value)} 
                     className="w-full bg-slate-950 border border-slate-700 rounded-xl px-4 py-3 text-sm text-white focus:outline-none focus:border-blue-500"
                   >
-                    <option value="Koordinator (Bahrudin)">Koordinator (Bahrudin) - Hak Akses Penuh</option>
-                    <option value="Auditor 1">Auditor 1 (Input Fisik Saja)</option>
-                    <option value="Auditor 2">Auditor 2 (Input Fisik Saja)</option>
-                    <option value="Checker / QC">Checker / QC (Verifikasi Saja)</option>
+                    {accounts.map(acc => (
+                      <option key={acc.key} value={acc.key}>{acc.name} ({acc.role.toUpperCase()})</option>
+                    ))}
                   </select>
                 </div>
 
@@ -483,7 +541,7 @@
                     className="w-full bg-slate-950 border border-slate-700 rounded-xl px-4 py-3 text-sm text-white focus:outline-none focus:border-blue-500 font-mono"
                     autoFocus
                   />
-                  <p className="text-[10px] text-slate-500 mt-1">Info Password default: Koordinator (<code className="text-slate-400">admin123</code>), Auditor (<code className="text-slate-400">auditor123</code>), QC (<code className="text-slate-400">qc123</code>)</p>
+                  <p className="text-[10px] text-slate-500 mt-1">Default Password: Koordinator (<code className="text-slate-400">admin123</code>), Auditor (<code className="text-slate-400">auditor123</code>), QC (<code className="text-slate-400">qc123</code>)</p>
                 </div>
 
                 <button type="submit" className="w-full bg-blue-600 hover:bg-blue-500 text-white font-semibold py-3 rounded-xl shadow-lg transition-all text-sm">
@@ -509,7 +567,7 @@
                       <h1 className="text-lg font-bold text-white">AuditStock Pro</h1>
                       <span className="text-[10px] bg-emerald-500/20 text-emerald-300 font-mono px-2 py-0.5 rounded-full border border-emerald-500/30">{dbStatus}</span>
                     </div>
-                    <p className="text-xs text-slate-400">Login sebagai: <strong className="text-blue-400">{currentUser}</strong> ({currentRole.toUpperCase()})</p>
+                    <p className="text-xs text-slate-400">Login: <strong className="text-blue-400">{currentUser}</strong> ({currentRole.toUpperCase()})</p>
                   </div>
                 </div>
 
@@ -519,6 +577,9 @@
                     <button onClick={() => setActiveTab('todos')} className={`px-3 py-2 rounded-lg text-xs sm:text-sm font-medium ${activeTab === 'todos' ? 'bg-blue-600 text-white shadow-md' : 'text-slate-300 hover:bg-slate-800'}`}>To-Do</button>
                     <button onClick={() => setActiveTab('dashboard')} className={`px-3 py-2 rounded-lg text-xs sm:text-sm font-medium ${activeTab === 'dashboard' ? 'bg-blue-600 text-white shadow-md' : 'text-slate-300 hover:bg-slate-800'}`}>Dashboard</button>
                     <button onClick={() => setActiveTab('export')} className={`px-3 py-2 rounded-lg text-xs sm:text-sm font-medium ${activeTab === 'export' ? 'bg-blue-600 text-white shadow-md' : 'text-slate-300 hover:bg-slate-800'}`}>Import & Laporan</button>
+                    {currentRole === 'koordinator' && (
+                      <button onClick={() => setActiveTab('settings')} className={`px-3 py-2 rounded-lg text-xs sm:text-sm font-medium ${activeTab === 'settings' ? 'bg-blue-600 text-white shadow-md' : 'text-slate-300 hover:bg-slate-800'}`}>Pengaturan Akun</button>
+                    )}
                   </nav>
                   
                   <button onClick={handleLogout} className="bg-rose-600/20 hover:bg-rose-600/30 text-rose-300 border border-rose-500/30 text-xs px-3 py-2 rounded-lg font-semibold transition-all">
@@ -744,29 +805,124 @@
 
             {activeTab === 'export' && (
               <div className="max-w-4xl mx-auto space-y-6">
-                {currentRole !== 'koordinator' ? (
-                  <div className="bg-rose-500/10 border border-rose-500/30 rounded-2xl p-6 text-center text-rose-300 text-sm">
-                    Menu Import & Export Laporan hanya dapat diakses oleh akun <strong>Koordinator</strong>.
+                <div className="bg-slate-800/90 border border-slate-700/80 rounded-2xl p-6 shadow-xl">
+                  <div className="flex items-center justify-between mb-4">
+                    <div>
+                      <h2 className="text-base font-bold text-white">Download Template Excel Native (.xls / .xlsx)</h2>
+                      <p className="text-xs text-slate-400">Unduh file template berformat rapi (Header Biru, Border Tegas & Zebra Striping)</p>
+                    </div>
+                    <span className="bg-emerald-500/10 text-emerald-400 border border-emerald-500/30 text-xs px-3 py-1 rounded-full font-mono font-bold">
+                      {masterStock.length} SKU Master Tersedia
+                    </span>
                   </div>
-                ) : (
-                  <>
-                    <div className="bg-slate-800/90 border border-slate-700/80 rounded-2xl p-6 shadow-xl relative">
-                      <h2 className="text-base font-bold text-white mb-2">Import File Excel (Master / Qty System)</h2>
-                      <div className="border-2 border-dashed border-slate-700 rounded-xl p-6 text-center hover:border-blue-500 transition-colors">
-                        <input type="file" accept=".xlsx, .xls, .csv" onChange={handleFileUpload} className="hidden" id="excel-upload-input" />
-                        <label htmlFor="excel-upload-input" className="cursor-pointer flex flex-col items-center">
-                          <span className="text-sm font-semibold text-blue-400">Upload File Excel Master/Qty</span>
-                        </label>
+
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mt-4">
+                    <div className="bg-slate-900/80 border border-indigo-500/30 rounded-xl p-4 flex flex-col justify-between">
+                      <div>
+                        <span className="text-indigo-300 text-xs font-bold block mb-2">Template 1: Data Master (Point 1-9)</span>
+                        <p className="text-[11px] text-slate-400 mb-3 leading-relaxed">Kolom: Nama Produk, Variasi Warna, Variasi Ukuran, SKU Induk, SKU Variasi, Sales Rata2/Bulan, Kategori Moving, Harga, Kategori Harga.</p>
                       </div>
+                      <button onClick={handleDownloadMasterTemplate} className="w-full bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-semibold py-2.5 rounded-lg shadow-md transition-all">Download Template Master</button>
                     </div>
 
-                    <div className="bg-slate-800/90 border border-slate-700/80 rounded-2xl p-6 shadow-xl">
-                      <h2 className="text-base font-bold text-white mb-1">Export Laporan Opname ke Excel</h2>
-                      <p className="text-xs text-slate-400 mb-4">Unduh hasil audit fisik terlengkap dengan info Author, QC, dan ACC Koordinator</p>
-                      <button onClick={handleExportToExcel} className="w-full bg-emerald-600 hover:bg-emerald-500 text-white font-semibold py-3 rounded-xl shadow-lg transition-all">Download Laporan Excel (.xlsx)</button>
+                    <div className="bg-slate-900/80 border border-blue-500/30 rounded-xl p-4 flex flex-col justify-between">
+                      <div>
+                        <span className="text-blue-300 text-xs font-bold block mb-2">Template 2: Data Qty Stok ({masterStock.length} SKU)</span>
+                        <p className="text-[11px] text-slate-400 mb-3 leading-relaxed">Secara otomatis memuat seluruh {masterStock.length} SKU yang ada di Master Data saat ini untuk memperbarui Qty System & Rasio Karung.</p>
+                      </div>
+                      <button onClick={handleDownloadQtyTemplate} className="w-full bg-blue-600 hover:bg-blue-500 text-white text-xs font-semibold py-2.5 rounded-lg shadow-md transition-all">Download Template Qty Stok</button>
                     </div>
-                  </>
-                )}
+                  </div>
+                </div>
+
+                <div className="bg-slate-800/90 border border-slate-700/80 rounded-2xl p-6 shadow-xl relative">
+                  <h2 className="text-base font-bold text-white mb-2">Import File Excel</h2>
+                  <p className="text-xs text-slate-400 mb-4">Pilih opsi import data master atau opsi input Qty stok saja</p>
+
+                  <div className="flex bg-slate-900 p-1 rounded-xl border border-slate-700 mb-4">
+                    <button onClick={() => setImportMode('master')} className={`flex-1 py-2 text-xs font-semibold rounded-lg transition-all ${importMode === 'master' ? 'bg-blue-600 text-white shadow-md' : 'text-slate-400 hover:text-white'}`}>Option 1: Import Data Master (Point 1-9)</button>
+                    <button onClick={() => setImportMode('qty')} className={`flex-1 py-2 text-xs font-semibold rounded-lg transition-all ${importMode === 'qty' ? 'bg-blue-600 text-white shadow-md' : 'text-slate-400 hover:text-white'}`}>Option 2: Import Qty Stok Saja (Point 10)</button>
+                  </div>
+
+                  <div className="border-2 border-dashed border-slate-700 rounded-xl p-6 text-center hover:border-blue-500 transition-colors">
+                    <input type="file" accept=".xlsx, .xls, .csv" onChange={handleFileUpload} className="hidden" id="excel-upload-input" />
+                    <label htmlFor="excel-upload-input" className="cursor-pointer flex flex-col items-center">
+                      <span className="text-sm font-semibold text-blue-400">Upload Excel: {importMode === 'master' ? 'Data Master (Point 1-9)' : 'Data Qty Stok (Point 10)'}</span>
+                      <span className="text-xs text-slate-500 mt-1">Format .xlsx, .xls, atau .csv didukung</span>
+                    </label>
+                  </div>
+
+                  {isProcessingFile && (
+                    <div className="fixed inset-0 z-50 bg-slate-950/80 backdrop-blur-sm flex items-center justify-center p-4">
+                      <div className="bg-slate-900 border border-slate-700 rounded-2xl max-w-md w-full p-6 shadow-2xl text-center space-y-3">
+                        <h3 className="text-base font-bold text-white">Proses Upload Excel ke Cloud</h3>
+                        <p className="text-xs text-slate-400">{uploadStatusMsg}</p>
+                        <div className="w-full bg-slate-800 rounded-full h-3 overflow-hidden p-0.5 border border-slate-700">
+                          <div className="bg-blue-600 h-full rounded-full transition-all duration-300" style={{ width: `${uploadProgress}%` }}></div>
+                        </div>
+                      </div>
+                    </div>
+                  )}
+                </div>
+
+                <div className="bg-slate-800/90 border border-slate-700/80 rounded-2xl p-6 shadow-xl">
+                  <h2 className="text-base font-bold text-white mb-1">Export Laporan Opname ke Excel</h2>
+                  <p className="text-xs text-slate-400 mb-4">Unduh hasil audit fisik terlengkap dengan konversi otomatis Pcs ke Karung & Varian</p>
+                  <button onClick={handleExportToExcel} className="w-full bg-emerald-600 hover:bg-emerald-500 text-white font-semibold py-3 rounded-xl shadow-lg shadow-emerald-600/35 transition-all">Download Laporan Excel Bergaya (.xls / .xlsx)</button>
+                </div>
+              </div>
+            )}
+
+            {activeTab === 'settings' && currentRole === 'koordinator' && (
+              <div className="max-w-2xl mx-auto space-y-6">
+                <div className="bg-slate-800/90 border border-slate-700/80 rounded-2xl p-6 shadow-xl space-y-4">
+                  <h2 className="text-base font-bold text-white">Pengaturan Akun & Manajemen Akses Tim</h2>
+                  <p className="text-xs text-slate-400">Sebagai Koordinator, Anda dapat mengubah nama tampilan atau password untuk setiap akun anggota tim.</p>
+
+                  <div className="space-y-4 pt-2">
+                    {accounts.map(acc => {
+                      const [localName, setLocalName] = useState(acc.name);
+                      const [localPass, setLocalPass] = useState('');
+                      return (
+                        <div key={acc.key} className="bg-slate-900 border border-slate-700/80 rounded-xl p-4 space-y-3">
+                          <div className="flex justify-between items-center">
+                            <span className="text-xs font-bold text-blue-400 uppercase">Peran: {acc.role}</span>
+                            <span className="text-[10px] text-slate-500 font-mono">Key: {acc.key}</span>
+                          </div>
+                          <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                            <div>
+                              <label className="block text-[11px] text-slate-400 mb-1">Nama Tampilan / User</label>
+                              <input 
+                                type="text" 
+                                value={localName} 
+                                onChange={(e) => setLocalName(e.target.value)} 
+                                className="w-full bg-slate-950 border border-slate-700 rounded-lg px-3 py-2 text-xs text-white"
+                              />
+                            </div>
+                            <div>
+                              <label className="block text-[11px] text-slate-400 mb-1">Password Baru (Opsional)</label>
+                              <input 
+                                type="password" 
+                                placeholder="Kosongkan jika tetap" 
+                                value={localPass} 
+                                onChange={(e) => setLocalPass(e.target.value)} 
+                                className="w-full bg-slate-950 border border-slate-700 rounded-lg px-3 py-2 text-xs text-white font-mono"
+                              />
+                            </div>
+                          </div>
+                          <div className="flex justify-end">
+                            <button 
+                              onClick={() => handleUpdateAccount(acc.key, localName, localPass)}
+                              className="bg-blue-600 hover:bg-blue-500 text-white text-xs font-semibold px-4 py-2 rounded-lg transition-all shadow-md"
+                            >
+                              Simpan Perubahan Akun
+                            </button>
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
               </div>
             )}
           </main>
